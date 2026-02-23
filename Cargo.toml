@@ -1,0 +1,166 @@
+[package]
+name = "my_agent"
+version = "0.1.0"
+edition = "2021"
+description = "Personal AI Agent Assistant with secure authentication and cloud orchestration"
+authors = ["My Agent Team"]
+rust-version = "1.75"
+
+[[bin]]
+name = "my-agent"
+path = "src/main.rs"
+
+[dependencies]
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client (for OpenRouter API)
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls", "multipart", "blocking"], default-features = false }
+reqwest-eventsource = "0.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Configuration
+toml = "0.8"
+
+# Keyring for secure API key storage
+keyring = "3"
+
+# Web server (for cloud deployment)
+axum = { version = "0.8", features = ["ws", "macros"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace", "limit", "timeout", "compression-gzip"] }
+rustls = { version = "0.23", features = ["ring"] }
+rustls-pemfile = "2.0"
+rustls-pki-types = "1.0"
+ring = "0.17"
+
+# WebSocket
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+
+# HTTP server with WebSocket support
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["full"] }
+tokio-rustls = "0.26"
+
+# JWT for authentication
+jsonwebtoken = "9"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUID
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# Async utilities
+futures = "0.3"
+async-trait = "0.1"
+
+# Pattern matching
+regex = "1"
+
+# Sandbox
+notify = "8"
+
+# Scheduling
+cron = "0.15"
+
+# Decimal for budget calculations
+rust_decimal = { version = "1", features = ["serde"] }
+rust_decimal_macros = "1"
+
+# Secure random
+rand = "0.9"
+
+# Directory paths
+directories = "6"
+dirs = "6"
+
+# Once cell for lazy static
+once_cell = "1"
+
+# Base64 encoding
+base64 = "0.22"
+shell-words = "1.1.1"
+
+# Certificate generation for HTTPS
+rcgen = "0.13"
+
+# HMAC for signature verification
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+
+# URL parsing
+url = "2"
+
+# Audio I/O (microphone input, speaker output) - needed for voice
+cpal = { version = "0.15", features = ["jack"] }
+rodio = "0.20"
+hound = "3.5"  # WAV file handling
+rubato = "0.15"  # Audio resampling
+
+# SQLite for persistent memory
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# Candle for local embeddings (optional, for semantic search)
+candle-core = "0.8"
+candle-transformers = "0.8"
+candle-nn = "0.8"
+tokenizers = "0.21"
+
+# HTML parsing for web browsing skill
+scraper = "0.22"
+readability = "0.3"
+
+# Terminal enhancements for CLI
+rustyline = "15"
+bat = { version = "0.25", optional = true }
+indicatif = "0.18"
+crossterm = "0.28"
+
+# Self-update support
+flate2 = "1"
+tar = "0.4"
+walkdir = "2"
+
+# Scripting engine for dynamic skills
+rhai = { version = "1", features = ["sync", "serde"] }
+
+# LRU cache for embeddings
+lru = "0.12"
+
+# Desktop screenshot (cross-platform: X11/Wayland/Windows/macOS)
+screenshots = "0.8"
+
+# Desktop control (mouse/keyboard simulation)
+enigo = "0.3"
+
+# Image processing
+image = "0.25"
+
+[features]
+default = []
+syntax-highlighting = ["bat"]
+whisper = []
+coqui_tts = []
+
+[dev-dependencies]
+tokio-test = "0.4"
+mockall = "0.13"
+tempfile = "3"

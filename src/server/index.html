@@ -1,0 +1,1120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>My Agent</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            min-height: 100vh;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Header */
+        .header {
+            background: rgba(255,255,255,0.08);
+            padding: 16px 20px;
+            text-align: center;
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            position: sticky;
+            top: 0;
+            z-index: 10;
+        }
+        .header h1 {
+            font-size: 1.3rem;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+        .status {
+            font-size: 0.85rem;
+            padding: 4px 12px;
+            border-radius: 12px;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .status.connected {
+            background: rgba(74, 222, 128, 0.2);
+            color: #4ade80;
+        }
+        .status.disconnected {
+            background: rgba(248, 113, 113, 0.2);
+            color: #f87171;
+        }
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: currentColor;
+            animation: pulse 2s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.5; transform: scale(0.8); }
+        }
+
+        /* Chat container */
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .message {
+            max-width: 85%;
+            padding: 12px 16px;
+            border-radius: 18px;
+            line-height: 1.5;
+            font-size: 0.95rem;
+            word-wrap: break-word;
+        }
+        .message.user {
+            align-self: flex-end;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-bottom-right-radius: 4px;
+        }
+        .message.assistant {
+            align-self: flex-start;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-bottom-left-radius: 4px;
+        }
+        .message.status {
+            align-self: center;
+            background: rgba(255,255,255,0.05);
+            font-size: 0.85rem;
+            color: #9ca3af;
+            font-style: italic;
+            border: 1px dashed rgba(255,255,255,0.1);
+        }
+        .message.error {
+            align-self: center;
+            background: rgba(239, 68, 68, 0.15);
+            border: 1px solid rgba(239, 68, 68, 0.3);
+            color: #fca5a5;
+        }
+
+        /* Input area */
+        .input-area {
+            padding: 16px;
+            background: rgba(255,255,255,0.05);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .input-container {
+            flex: 1;
+            position: relative;
+        }
+        .message-input {
+            width: 100%;
+            padding: 12px 16px;
+            background: rgba(255,255,255,0.1);
+            border: 1px solid rgba(255,255,255,0.15);
+            border-radius: 24px;
+            color: #fff;
+            font-size: 1rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+        .message-input:focus {
+            border-color: #3b82f6;
+            background: rgba(255,255,255,0.15);
+        }
+        .message-input::placeholder {
+            color: rgba(255,255,255,0.4);
+        }
+        .send-btn {
+            padding: 12px 20px;
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border: none;
+            border-radius: 24px;
+            color: #fff;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .send-btn:hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+        .send-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        /* Voice controls */
+        .voice-controls {
+            padding: 16px;
+            background: rgba(255,255,255,0.05);
+            border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: center;
+            gap: 12px;
+            align-items: center;
+        }
+        .mic-btn {
+            width: 64px;
+            height: 64px;
+            border-radius: 50%;
+            border: none;
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            color: #fff;
+            font-size: 24px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .mic-btn:hover:not(:disabled) {
+            transform: scale(1.1);
+            box-shadow: 0 4px 16px rgba(239, 68, 68, 0.5);
+        }
+        .mic-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .mic-btn.recording {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            animation: recording-pulse 1s infinite;
+        }
+        .mic-btn.realtime {
+            background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
+            animation: realtime-pulse 2s infinite;
+        }
+        @keyframes realtime-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(139, 92, 246, 0.4); }
+            50% { box-shadow: 0 0 0 12px rgba(139, 92, 246, 0); }
+        }
+        @keyframes recording-pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
+            50% { box-shadow: 0 0 0 12px rgba(34, 197, 94, 0); }
+        }
+
+        /* TTS Toggle */
+        .tts-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            background: rgba(255,255,255,0.1);
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .tts-toggle:hover {
+            background: rgba(255,255,255,0.15);
+        }
+        .tts-toggle.active {
+            background: rgba(139, 92, 246, 0.3);
+            border: 1px solid rgba(139, 92, 246, 0.5);
+        }
+        .tts-toggle input {
+            display: none;
+        }
+        .tts-toggle .toggle-icon {
+            font-size: 18px;
+        }
+        .tts-toggle .toggle-text {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.8);
+        }
+
+        /* Audio Enable Overlay */
+        .audio-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+            backdrop-filter: blur(5px);
+        }
+        .audio-overlay-content {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border: 2px solid rgba(139, 92, 246, 0.5);
+            border-radius: 20px;
+            padding: 40px;
+            text-align: center;
+            max-width: 300px;
+        }
+        .audio-overlay-icon {
+            font-size: 48px;
+            margin-bottom: 16px;
+        }
+        .audio-overlay-text {
+            font-size: 1.2rem;
+            color: rgba(255,255,255,0.9);
+            margin-bottom: 24px;
+        }
+        .audio-overlay-btn {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+            color: white;
+            border: none;
+            padding: 16px 32px;
+            border-radius: 12px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .audio-overlay-btn:active {
+            transform: scale(0.95);
+        }
+
+        /* Status indicators */
+        .connection-status {
+            position: fixed;
+            top: 60px;
+            right: 16px;
+            background: rgba(0,0,0,0.8);
+            padding: 8px 12px;
+            border-radius: 8px;
+            font-size: 0.75rem;
+            z-index: 100;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .connection-status.show {
+            opacity: 1;
+        }
+
+        /* Debug console */
+        .debug-console {
+            position: fixed;
+            bottom: 80px;
+            right: 16px;
+            width: 300px;
+            max-height: 200px;
+            background: rgba(0,0,0,0.9);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.7rem;
+            overflow-y: auto;
+            z-index: 100;
+            display: none;
+        }
+        .debug-console.show {
+            display: block;
+        }
+        .debug-line {
+            margin: 2px 0;
+            color: #4ade80;
+        }
+        .debug-line.error {
+            color: #f87171;
+        }
+        .debug-line.warn {
+            color: #fbbf24;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>My Agent</h1>
+        <div id="status" class="status disconnected">
+            <span class="status-dot"></span>
+            <span id="statusText">Disconnected</span>
+        </div>
+    </div>
+
+    <!-- Audio Enable Overlay for Mobile Browsers -->
+    <div id="audioEnableOverlay" class="audio-overlay" style="display: none;" onclick="enableAudio()">
+        <div class="audio-overlay-content" onclick="event.stopPropagation();">
+            <div class="audio-overlay-icon">🔊</div>
+            <div class="audio-overlay-text">Tap anywhere to enable audio</div>
+            <button class="audio-overlay-btn" onclick="enableAudio()">Enable Audio</button>
+        </div>
+    </div>
+
+    <div id="chatContainer" class="chat-container">
+        <div class="message status">Welcome! Connect to start chatting.</div>
+    </div>
+
+    <div class="input-area">
+        <div class="input-container">
+            <input type="text" id="messageInput" class="message-input" placeholder="Type a message..." />
+        </div>
+        <button id="sendBtn" class="send-btn" onclick="sendMessage()">Send</button>
+    </div>
+
+    <div class="voice-controls">
+        <button id="micBtn" class="mic-btn" onclick="toggleRecording()" disabled>
+            🎤
+        </button>
+        <label class="tts-toggle" id="ttsToggle" onclick="toggleTTS()">
+            <span class="toggle-icon">🔊</span>
+            <span class="toggle-text">Speak</span>
+        </label>
+    </div>
+
+    <div id="connectionStatus" class="connection-status"></div>
+    <div id="debugConsole" class="debug-console"></div>
+
+    <script>
+        // State
+        let ws = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let isRealTimeMode = false; // Toggle for real-time voice mode
+        let realTimeStream = null; // MediaStream for real-time audio
+        let reconnectAttempts = 0;
+        let debugMode = true;
+        let isConnecting = false; // Track if we're currently connecting
+        let liveKitConnectionActive = false; // Track if LiveKit connection is active
+        let ttsEnabled = false; // Text-to-speech toggle
+        let audioContext = null; // Audio context for mobile browsers
+        let audioEnabled = false; // Whether audio has been enabled by user
+        let pendingSpeech = null; // Queue for speech that couldn't play yet
+
+        // DOM Elements
+        const chatContainer = document.getElementById('chatContainer');
+        const messageInput = document.getElementById('messageInput');
+        const sendBtn = document.getElementById('sendBtn');
+        const micBtn = document.getElementById('micBtn');
+        const statusDiv = document.getElementById('status');
+        const statusText = document.getElementById('statusText');
+        const connectionStatus = document.getElementById('connectionStatus');
+        const debugConsole = document.getElementById('debugConsole');
+
+        // Debug logging
+        function debug(msg, type = 'log') {
+            if (!debugMode) return;
+            const time = new Date().toLocaleTimeString();
+            const line = document.createElement('div');
+            line.className = 'debug-line' + (type === 'error' ? ' error' : type === 'warn' ? ' warn' : '');
+            line.textContent = `[${time}] ${msg}`;
+            debugConsole.appendChild(line);
+            debugConsole.scrollTop = debugConsole.scrollHeight;
+            console.log(`[DEBUG] ${msg}`);
+        }
+
+        // Show connection status
+        function showStatus(msg, isError = false) {
+            connectionStatus.textContent = msg;
+            connectionStatus.classList.add('show');
+            if (isError) {
+                connectionStatus.style.background = 'rgba(239, 68, 68, 0.9)';
+            } else {
+                connectionStatus.style.background = 'rgba(34, 197, 94, 0.9)';
+            }
+            setTimeout(() => connectionStatus.classList.remove('show'), 3000);
+        }
+
+        // Update connection UI
+        function setConnected(connected) {
+            if (connected) {
+                statusDiv.className = 'status connected';
+                statusText.textContent = 'Connected';
+                micBtn.disabled = false;
+                sendBtn.disabled = false;
+                messageInput.disabled = false;
+            } else {
+                statusDiv.className = 'status disconnected';
+                statusText.textContent = 'Disconnected';
+                micBtn.disabled = true;
+                sendBtn.disabled = true;
+                messageInput.disabled = true;
+                if (isRecording) {
+                    stopRecording();
+                }
+            }
+        }
+
+        // Add message to chat
+        function addMessage(text, type = 'user') {
+            const msg = document.createElement('div');
+            msg.className = `message ${type}`;
+            msg.textContent = text;
+            chatContainer.appendChild(msg);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // Connect to WebSocket
+        function connect() {
+            // Check if we already have a healthy connection
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                debug('Already connected, skipping new connection');
+                return;
+            }
+
+            // Check if we're already connecting
+            if (isConnecting) {
+                debug('Already connecting, skipping duplicate connection attempt');
+                return;
+            }
+
+            // Close any existing connection that's not closed
+            if (ws && ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
+                debug('Closing existing connection before reconnecting');
+                try {
+                    ws.close(1000, 'Reconnecting');
+                } catch (e) {
+                    debug(`Error closing existing connection: ${e}`, 'warn');
+                }
+            }
+
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+
+            debug(`Connecting to: ${wsUrl}`);
+            showStatus('Connecting...');
+
+            isConnecting = true; // Set connecting flag
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                debug('WebSocket connected');
+                setConnected(true);
+                reconnectAttempts = 0;
+                isConnecting = false; // Reset connecting flag
+                showStatus('Connected!');
+            };
+
+            ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    debug(`Received: ${JSON.stringify(data)}`);
+                    handleMessage(data);
+                } catch (e) {
+                    debug(`Failed to parse message: ${e}`, 'error');
+                }
+            };
+
+            ws.onclose = (event) => {
+                debug(`WebSocket closed: code=${event.code}, reason=${event.reason || 'none'}`);
+                setConnected(false);
+                isConnecting = false; // Reset connecting flag
+
+                // Only reconnect if this wasn't a clean closure (code 1000 or 1001)
+                if (event.code !== 1000 && event.code !== 1001) {
+                    if (reconnectAttempts < 5) {
+                        reconnectAttempts++;
+                        debug(`Reconnecting in 2s (attempt ${reconnectAttempts}/5)`, 'warn');
+                        showStatus(`Reconnecting... (${reconnectAttempts}/5)`);
+                        setTimeout(connect, 2000);
+                    } else {
+                        debug('Max reconnection attempts reached', 'error');
+                        addMessage('⚠️ Could not connect to server. Please refresh the page.', 'error');
+                    }
+                } else {
+                    debug('Connection closed cleanly, not reconnecting', 'log');
+                }
+            };
+
+            ws.onerror = (error) => {
+                debug(`WebSocket error: ${error}`, 'error');
+                showStatus('Connection error', true);
+                isConnecting = false; // Reset connecting flag on error
+            };
+        }
+
+        // Handle incoming messages
+        function handleMessage(data) {
+            switch (data.type) {
+                case 'response':
+                    // Remove the "Thinking..." status message if it exists
+                    removeLastStatusMessage();
+                    addMessage(data.content, 'assistant');
+                    // Speak the response if TTS is enabled
+                    if (ttsEnabled) {
+                        speakWithBrowserTTS(data.content).catch(e => {
+                            debug(`TTS error: ${e}`, 'error');
+                        });
+                    }
+                    break;
+                case 'transcribed':
+                    addMessage(`🎤 ${data.text}`, 'status');
+                    break;
+                case 'status':
+                    // Show all status messages
+                    addMessage(data.message, 'status');
+                    break;
+                case 'error':
+                    removeLastStatusMessage(); // Remove any pending "Thinking..." messages
+                    addMessage(`⚠️ ${data.message}`, 'error');
+                    showStatus(data.message, true);
+                    break;
+                case 'audio':
+                    // Remove the "Thinking..." status message if it exists
+                    removeLastStatusMessage();
+                    addMessage('🔊 Speaking...', 'status');
+                    // Play the received audio
+                    playAudio(data.audio_data);
+                    break;
+                default:
+                    debug(`Unknown message type: ${data.type}`, 'warn');
+            }
+        }
+
+        // Browser-based Text-to-Speech using Web Speech API
+        async function speakWithBrowserTTS(text) {
+            debug(`Attempting TTS: "${text.substring(0, 30)}..."`);
+
+            if (!('speechSynthesis' in window)) {
+                debug('Browser TTS not supported', 'warn');
+                return;
+            }
+
+            // On mobile Safari/Chrome, speech requires user interaction
+            // If audio hasn't been enabled yet, queue it and show overlay
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            if (isMobile && !audioEnabled) {
+                debug('Audio not yet enabled, queuing speech for overlay');
+                pendingSpeech = text;
+                document.getElementById('audioEnableOverlay').style.display = 'flex';
+                return;
+            }
+
+            // Ensure audio context is ready (required for mobile)
+            if (audioContext && audioContext.state === 'suspended') {
+                try {
+                    await audioContext.resume();
+                    debug('Audio context resumed');
+                } catch (e) {
+                    debug('Could not resume audio context', 'warn');
+                }
+            }
+
+            // Small delay for Android Chrome to process user gesture
+            if (isMobile) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
+
+            // Cancel any ongoing speech
+            window.speechSynthesis.cancel();
+
+            // Create utterance
+            const utterance = new SpeechSynthesisUtterance(text);
+            utterance.rate = 1.0;
+            utterance.pitch = 1.0;
+            utterance.volume = 1.0;
+
+            // Get voices - may be empty initially on some browsers
+            let voices = window.speechSynthesis.getVoices();
+            if (!voices || voices.length === 0) {
+                debug('Voices not loaded yet, using default');
+                // Try to wait for voices on Android
+                await new Promise(resolve => setTimeout(resolve, 200));
+                voices = window.speechSynthesis.getVoices();
+            }
+
+            // Try to find a good voice
+            const preferredVoice = voices.find(v => v.name.includes('Google'))
+                || voices.find(v => v.name.includes('Samsung'))
+                || voices.find(v => v.lang === 'en-US')
+                || voices.find(v => v.lang && v.lang.startsWith('en'))
+                || voices[0];
+
+            if (preferredVoice) {
+                utterance.voice = preferredVoice;
+                debug(`Using voice: ${preferredVoice.name}`);
+            } else {
+                debug('Using default voice');
+            }
+
+            utterance.onstart = () => {
+                debug('Browser TTS started speaking');
+            };
+
+            utterance.onend = () => {
+                debug('Browser TTS finished');
+            };
+
+            utterance.onerror = (e) => {
+                debug(`Browser TTS error: ${e.error} (charIndex: ${e.charIndex})`, 'error');
+            };
+
+            // Android Chrome workaround: sometimes speak() needs to be called twice
+            window.speechSynthesis.speak(utterance);
+
+            // Chrome on Android sometimes needs a resume call
+            if (isMobile && window.speechSynthesis.paused) {
+                window.speechSynthesis.resume();
+            }
+        }
+
+        // Remove the last status message (used to remove "Thinking..." messages)
+        function removeLastStatusMessage() {
+            const statusMessages = chatContainer.querySelectorAll('.message.status');
+            if (statusMessages.length > 0) {
+                const lastStatus = statusMessages[statusMessages.length - 1];
+                // Check if it's a "Thinking..." or similar status message
+                const text = lastStatus.textContent;
+                if (text.includes('Thinking') || text.includes('Listening') || text.includes('Connecting') || text.includes('Transcribing') || text.includes('Speaking')) {
+                    lastStatus.remove();
+                    debug('Removed status message: ' + text);
+                }
+            }
+        }
+
+        // Send text message
+        async function sendMessage() {
+            const content = messageInput.value.trim();
+            if (!content) return;
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('⚠️ Not connected to server', 'error');
+                return;
+            }
+
+            // Enable audio on user gesture (required for mobile HTTPS)
+            if (!audioEnabled) {
+                await enableAudio();
+            }
+
+            addMessage(content, 'user');
+            messageInput.value = '';
+
+            try {
+                ws.send(JSON.stringify({ type: 'chat', content, tts: ttsEnabled }));
+                debug(`Sent: ${content} (TTS: ${ttsEnabled})`);
+            } catch (e) {
+                debug(`Failed to send message: ${e}`, 'error');
+                addMessage('⚠️ Failed to send message', 'error');
+            }
+        }
+
+        // Allow Enter key to send
+        messageInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Toggle recording / real-time mode
+        async function toggleRecording() {
+            // Enable audio on user gesture (required for mobile HTTPS)
+            if (!audioEnabled) {
+                await enableAudio();
+            }
+
+            if (isRealTimeMode) {
+                // Stop real-time mode
+                stopRealTimeMode();
+            } else if (isRecording) {
+                // Stop regular recording
+                stopRecording();
+            } else {
+                // Check if we should start real-time mode or regular recording
+                // For now, start real-time mode by default
+                await startRealTimeMode();
+            }
+        }
+
+        // Start recording
+        async function startRecording() {
+            try {
+                debug('Requesting microphone access...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                debug('Microphone access granted');
+                mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0) {
+                        audioChunks.push(event.data);
+                    }
+                };
+
+                mediaRecorder.onstop = async () => {
+                    const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
+                    debug(`Recording stopped, size: ${audioBlob.size} bytes`);
+
+                    if (audioBlob.size > 0) {
+                        await sendAudio(audioBlob);
+                    }
+                };
+
+                mediaRecorder.start(1000); // Collect data every second
+                isRecording = true;
+                micBtn.classList.add('recording');
+                micBtn.textContent = '⏹️';
+                addMessage('🎤 Recording...', 'status');
+                debug('Recording started');
+
+            } catch (error) {
+                debug(`Microphone error: ${error}`, 'error');
+                addMessage('⚠️ Could not access microphone', 'error');
+                showStatus('Microphone access denied', true);
+            }
+        }
+
+        // Stop recording
+        function stopRecording() {
+            if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+                mediaRecorder.stop();
+            }
+            isRecording = false;
+            micBtn.classList.remove('recording');
+            micBtn.textContent = '🎤';
+            debug('Recording stopped');
+
+            // Stop all tracks
+            if (mediaRecorder && mediaRecorder.stream) {
+                mediaRecorder.stream.getTracks().forEach(track => track.stop());
+            }
+        }
+
+        // Start real-time voice mode (for LiveKit)
+        async function startRealTimeMode() {
+            try {
+                debug('Requesting microphone access for real-time mode...');
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        sampleRate: 16000,
+                        channelCount: 1,
+                        echoCancellation: true,
+                        noiseSuppression: true
+                    }
+                });
+
+                debug('Microphone access granted for real-time mode');
+                realTimeStream = stream;
+                isRealTimeMode = true;
+                isRecording = true;
+                micBtn.classList.add('realtime');
+                micBtn.textContent = '⏹️';
+
+                addMessage('🎤 Real-time voice mode active (LiveKit)', 'status');
+                showStatus('Real-time mode active');
+
+                // Start streaming audio in real-time
+                await startRealTimeStreaming(stream);
+
+            } catch (error) {
+                debug(`Microphone error: ${error}`, 'error');
+                addMessage('⚠️ Could not access microphone', 'error');
+                showStatus('Microphone access denied', true);
+            }
+        }
+
+        // Stop real-time voice mode
+        function stopRealTimeMode() {
+            if (realTimeStream) {
+                realTimeStream.getTracks().forEach(track => track.stop());
+                realTimeStream = null;
+            }
+            isRealTimeMode = false;
+            isRecording = false;
+            liveKitConnectionActive = false;
+            micBtn.classList.remove('realtime');
+            micBtn.classList.remove('recording');
+            micBtn.textContent = '🎤';
+            debug('Real-time mode stopped');
+            addMessage('🛑 Real-time voice mode stopped', 'status');
+            showStatus('Real-time mode stopped');
+        }
+
+        // Start real-time streaming (for LiveKit)
+        async function startRealTimeStreaming(stream) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('⚠️ Cannot start real-time mode: Not connected to server', 'error');
+                stopRealTimeMode();
+                return;
+            }
+
+            debug('Starting real-time audio streaming...');
+
+            // Create an audio processor for real-time streaming
+            const audioContext = new AudioContext();
+            const source = audioContext.createMediaStreamSource(stream);
+            const processor = audioContext.createScriptProcessor(2048, 1, 1);
+
+            let lastSendTime = 0;
+            const sendInterval = 200; // Send every 200ms for real-time (reduced to avoid overwhelming server)
+
+            // Track if this is the first audio chunk (for initial connection)
+            let isFirstChunk = true;
+
+            processor.onaudioprocess = (event) => {
+                const now = Date.now();
+                if (now - lastSendTime < sendInterval) {
+                    return; // Skip if we're sending too frequently
+                }
+                lastSendTime = now;
+
+                // Only send if we're still in real-time mode
+                if (!isRealTimeMode) {
+                    return;
+                }
+
+                const audioData = event.inputBuffer.getChannelData(0);
+                const audioArray = new Float32Array(audioData);
+
+                // Check if there's actual audio data (not all zeros)
+                let hasAudio = false;
+                for (let i = 0; i < audioArray.length; i++) {
+                    if (Math.abs(audioArray[i]) > 0.01) { // Threshold to detect actual audio
+                        hasAudio = true;
+                        break;
+                    }
+                }
+
+                if (!hasAudio) {
+                    return; // Skip silent audio
+                }
+
+                // Convert Float32Array to Int16Array for more efficient transmission
+                const int16Array = new Int16Array(audioArray.length);
+                for (let i = 0; i < audioArray.length; i++) {
+                    int16Array[i] = Math.max(-32768, Math.min(32767, audioArray[i] * 32767));
+                }
+
+                // Convert to base64
+                const base64 = btoa(String.fromCharCode(...new Uint8Array(int16Array.buffer)));
+
+                // Send to server with real-time flag
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'voice',
+                        audio_data: base64,
+                        is_realtime: true // Flag to indicate real-time streaming
+                    }));
+                    debug(`Sent audio chunk (isFirstChunk: ${isFirstChunk})`);
+                    isFirstChunk = false;
+                }
+            };
+
+            source.connect(processor);
+            // Don't connect to destination to avoid feedback loop
+            // processor.connect(audioContext.destination);
+
+            debug('Real-time streaming started');
+
+            // Keep the connection alive and handle responses
+            // In real-time mode, we expect continuous responses from the server
+        }
+
+        // Play received audio (base64 encoded)
+        async function playAudio(audioData) {
+            try {
+                debug('Playing audio response...');
+
+                // Decode base64 to binary
+                const binaryString = atob(audioData);
+                const bytes = new Uint8Array(binaryString.length);
+                for (let i = 0; i < binaryString.length; i++) {
+                    bytes[i] = binaryString.charCodeAt(i);
+                }
+
+                // Create blob and object URL
+                const audioBlob = new Blob([bytes], { type: 'audio/wav' });
+                const audioUrl = URL.createObjectURL(audioBlob);
+
+                // Create audio element and play
+                const audio = new Audio(audioUrl);
+
+                audio.onended = () => {
+                    debug('Audio playback finished');
+                    URL.revokeObjectURL(audioUrl);
+                };
+
+                audio.onerror = (e) => {
+                    debug(`Audio playback error: ${e}`, 'error');
+                    URL.revokeObjectURL(audioUrl);
+                };
+
+                await audio.play();
+                debug('Audio playback started');
+
+            } catch (e) {
+                debug(`Failed to play audio: ${e}`, 'error');
+                addMessage('⚠️ Could not play audio response', 'error');
+            }
+        }
+
+        // Send audio to server
+        async function sendAudio(audioBlob) {
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                addMessage('⚠️ Could not send audio: Not connected to server', 'error');
+                debug('WebSocket not open for audio send', 'error');
+                return;
+            }
+
+            debug('Converting audio to base64...');
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
+
+            debug(`Sending audio: ${base64.length} chars`);
+            addMessage('📤 Sending audio...', 'status');
+
+            try {
+                ws.send(JSON.stringify({
+                    type: 'voice',
+                    audio_data: base64
+                }));
+                debug('Audio sent successfully');
+            } catch (e) {
+                debug(`Failed to send audio: ${e}`, 'error');
+                addMessage('⚠️ Failed to send audio', 'error');
+            }
+        }
+
+        // Toggle debug console
+        document.addEventListener('keydown', (e) => {
+            if (e.key === '`' || e.key === '~') {
+                debugConsole.classList.toggle('show');
+            }
+        });
+
+        // Toggle TTS (Text-to-Speech)
+        async function toggleTTS() {
+            ttsEnabled = !ttsEnabled;
+            const ttsToggle = document.getElementById('ttsToggle');
+            if (ttsEnabled) {
+                ttsToggle.classList.add('active');
+                debug('TTS enabled - responses will be spoken');
+                showStatus('Voice responses enabled');
+                // Enable audio immediately on user gesture (required for HTTPS mobile)
+                if (!audioEnabled) {
+                    await enableAudio();
+                }
+            } else {
+                ttsToggle.classList.remove('active');
+                debug('TTS disabled');
+                showStatus('Voice responses disabled');
+            }
+        }
+
+        // Preload TTS voices
+        if ('speechSynthesis' in window) {
+            // Force voices to load (some browsers load them asynchronously)
+            window.speechSynthesis.getVoices();
+            window.speechSynthesis.onvoiceschanged = () => {
+                const voices = window.speechSynthesis.getVoices();
+                debug(`TTS voices loaded: ${voices.length} available`);
+            };
+        }
+
+        // Check if audio needs to be enabled (mobile browsers require user interaction)
+        function checkAudioPermission() {
+            // Always show on mobile devices or if audio context is suspended
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            if (isMobile && !audioEnabled) {
+                document.getElementById('audioEnableOverlay').style.display = 'flex';
+                debug('Showing audio enable overlay for mobile');
+            }
+        }
+
+        // Enable audio (called by user tapping the button or overlay)
+        async function enableAudio() {
+            debug('Enabling audio...');
+
+            try {
+                // Create audio context for mobile browsers
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+
+                // Resume audio context if suspended
+                if (audioContext.state === 'suspended') {
+                    await audioContext.resume();
+                }
+
+                // Test speech synthesis with a short phrase
+                if ('speechSynthesis' in window) {
+                    window.speechSynthesis.cancel();
+                    // Use a tiny delay to ensure the user gesture is registered
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                    const testUtterance = new SpeechSynthesisUtterance('.');
+                    testUtterance.volume = 0; // Silent test
+                    window.speechSynthesis.speak(testUtterance);
+                }
+
+                audioEnabled = true;
+                document.getElementById('audioEnableOverlay').style.display = 'none';
+                debug('Audio enabled successfully');
+                showStatus('Audio enabled');
+
+                // Play any pending speech after a short delay
+                if (pendingSpeech) {
+                    debug('Playing pending speech in 100ms...');
+                    setTimeout(() => {
+                        speakWithBrowserTTS(pendingSpeech);
+                        pendingSpeech = null;
+                    }, 100);
+                }
+
+            } catch (e) {
+                debug(`Failed to enable audio: ${e}`, 'error');
+                // Don't show alert, just log - user can try again
+            }
+        }
+
+        // Add one-time click listener to enable audio on first interaction anywhere
+        function setupFirstInteraction() {
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+            if (!isMobile) return;
+
+            const handler = async () => {
+                if (!audioEnabled) {
+                    debug('First interaction detected, enabling audio...');
+                    await enableAudio();
+                }
+                // Remove listener after first interaction
+                document.removeEventListener('touchstart', handler);
+                document.removeEventListener('click', handler);
+            };
+
+            document.addEventListener('touchstart', handler, { passive: true });
+            document.addEventListener('click', handler);
+        }
+
+        // Auto-connect on page load
+        window.addEventListener('load', () => {
+            debug('Page loaded, connecting...');
+            // Check if we need audio permission on mobile
+            checkAudioPermission();
+            // Setup first interaction listener for mobile
+            setupFirstInteraction();
+            // Use setTimeout to ensure the DOM is fully ready
+            setTimeout(() => connect(), 100);
+        });
+
+        // Reconnect on visibility change (only if we haven't connected successfully yet)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && (!ws || ws.readyState !== WebSocket.OPEN)) {
+                const statusText = document.getElementById('statusText').textContent;
+                if (statusText === 'Disconnected' || statusText === 'Connection error') {
+                    debug('Page visible, reconnecting...');
+                    connect();
+                }
+            }
+        });
+    </script>
+</body>
+</html>

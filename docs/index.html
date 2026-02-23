@@ -1,0 +1,1573 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Agent - Documentation</title>
+    <style>
+        :root {
+            --bg-primary: #0f0f1a;
+            --bg-secondary: #1a1a2e;
+            --bg-tertiary: #16213e;
+            --text-primary: #ffffff;
+            --text-secondary: #a0a0b0;
+            --accent-blue: #3b82f6;
+            --accent-purple: #8b5cf6;
+            --accent-green: #22c55e;
+            --accent-orange: #f97316;
+            --accent-red: #ef4444;
+            --accent-cyan: #06b6d4;
+            --border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Inter', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            line-height: 1.6;
+        }
+
+        /* Navigation */
+        .nav {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 280px;
+            height: 100vh;
+            background: var(--bg-secondary);
+            border-right: 1px solid var(--border-color);
+            padding: 20px;
+            overflow-y: auto;
+            z-index: 100;
+        }
+
+        .nav-logo {
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .nav-version {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            margin-bottom: 30px;
+        }
+
+        .nav-section {
+            margin-bottom: 24px;
+        }
+
+        .nav-section-title {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+            margin-bottom: 12px;
+            font-weight: 600;
+        }
+
+        .nav-link {
+            display: block;
+            padding: 8px 12px;
+            color: var(--text-secondary);
+            text-decoration: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+        }
+
+        .nav-link:hover, .nav-link.active {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+        }
+
+        .nav-link.active {
+            border-left: 2px solid var(--accent-blue);
+        }
+
+        /* Main Content */
+        .main {
+            margin-left: 280px;
+            padding: 40px 60px;
+            max-width: 1200px;
+        }
+
+        .section {
+            margin-bottom: 60px;
+        }
+
+        .section-title {
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 8px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .section-title .icon {
+            font-size: 1.5rem;
+        }
+
+        .section-desc {
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+            font-size: 1rem;
+        }
+
+        /* Cards */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+            gap: 16px;
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+            transition: all 0.2s;
+        }
+
+        .card:hover {
+            border-color: var(--accent-blue);
+            transform: translateY(-2px);
+        }
+
+        .card-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+        }
+
+        .card-icon.blue { background: rgba(59, 130, 246, 0.2); }
+        .card-icon.purple { background: rgba(139, 92, 246, 0.2); }
+        .card-icon.green { background: rgba(34, 197, 94, 0.2); }
+        .card-icon.orange { background: rgba(249, 115, 22, 0.2); }
+        .card-icon.red { background: rgba(239, 68, 68, 0.2); }
+        .card-icon.cyan { background: rgba(6, 182, 212, 0.2); }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .card-desc {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-bottom: 12px;
+        }
+
+        /* Code blocks */
+        .code-block {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+            overflow-x: auto;
+            margin: 12px 0;
+        }
+
+        .code-inline {
+            background: var(--bg-tertiary);
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+            font-size: 0.85rem;
+        }
+
+        /* Parameters table */
+        .params-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 12px;
+        }
+
+        .params-table th, .params-table td {
+            text-align: left;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 0.85rem;
+        }
+
+        .params-table th {
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+
+        .param-name {
+            color: var(--accent-cyan);
+            font-family: monospace;
+        }
+
+        .param-type {
+            color: var(--accent-orange);
+            font-size: 0.8rem;
+        }
+
+        .param-required {
+            color: var(--accent-red);
+            font-size: 0.75rem;
+            background: rgba(239, 68, 68, 0.1);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        /* Command list */
+        .cmd-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .cmd-item {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 12px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        .cmd-syntax {
+            font-family: monospace;
+            color: var(--accent-green);
+            min-width: 180px;
+        }
+
+        .cmd-desc {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+        }
+
+        /* Badges */
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+
+        .badge-new {
+            background: rgba(34, 197, 94, 0.2);
+            color: var(--accent-green);
+        }
+
+        .badge-beta {
+            background: rgba(249, 115, 22, 0.2);
+            color: var(--accent-orange);
+        }
+
+        /* Keyboard shortcuts */
+        .kbd {
+            display: inline-block;
+            padding: 4px 10px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            font-family: monospace;
+            font-size: 0.85rem;
+            box-shadow: 0 2px 0 var(--border-color);
+        }
+
+        /* Tool category */
+        .tool-category {
+            margin-bottom: 32px;
+        }
+
+        .tool-category-title {
+            font-size: 1.2rem;
+            font-weight: 600;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-primary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border-color);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Responsive */
+        @media (max-width: 900px) {
+            .nav {
+                width: 100%;
+                height: auto;
+                position: relative;
+                border-right: none;
+                border-bottom: 1px solid var(--border-color);
+            }
+            .main {
+                margin-left: 0;
+                padding: 20px;
+            }
+            .card-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        /* Hero */
+        .hero {
+            text-align: center;
+            padding: 60px 20px;
+            background: linear-gradient(135deg, rgba(59, 130, 246, 0.1), rgba(139, 92, 246, 0.1));
+            border-radius: 20px;
+            margin-bottom: 40px;
+        }
+
+        .hero-title {
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 16px;
+            background: linear-gradient(135deg, #fff, #a0a0b0);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .hero-subtitle {
+            font-size: 1.2rem;
+            color: var(--text-secondary);
+            max-width: 600px;
+            margin: 0 auto 24px;
+        }
+
+        .hero-badges {
+            display: flex;
+            gap: 12px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .hero-badge {
+            padding: 8px 16px;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid var(--border-color);
+            border-radius: 20px;
+            font-size: 0.9rem;
+        }
+
+        /* Search */
+        .search-container {
+            margin-bottom: 24px;
+        }
+
+        .search-input {
+            width: 100%;
+            max-width: 500px;
+            padding: 12px 20px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            color: var(--text-primary);
+            font-size: 1rem;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .search-input:focus {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+        }
+
+        .search-input::placeholder {
+            color: var(--text-secondary);
+        }
+
+        /* Accordion */
+        .accordion {
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        .accordion-header {
+            padding: 16px 20px;
+            background: var(--bg-secondary);
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: background 0.2s;
+        }
+
+        .accordion-header:hover {
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .accordion-content {
+            padding: 0 20px;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+        }
+
+        .accordion.open .accordion-content {
+            padding: 20px;
+            max-height: 2000px;
+        }
+
+        .accordion-arrow {
+            transition: transform 0.2s;
+        }
+
+        .accordion.open .accordion-arrow {
+            transform: rotate(180deg);
+        }
+    </style>
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-logo">🤖 My Agent</div>
+        <div class="nav-version">v0.1.0 Documentation</div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="#overview" class="nav-link active">Overview</a>
+            <a href="#installation" class="nav-link">Installation</a>
+            <a href="#quickstart" class="nav-link">Quick Start</a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">CLI Commands</div>
+            <a href="#cli-interactive" class="nav-link">interactive</a>
+            <a href="#cli-chat" class="nav-link">chat</a>
+            <a href="#cli-memory" class="nav-link">memory</a>
+            <a href="#cli-config" class="nav-link">config</a>
+            <a href="#cli-doctor" class="nav-link">doctor</a>
+            <a href="#cli-skills" class="nav-link">skills</a>
+            <a href="#cli-soul" class="nav-link">soul</a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">Interactive Mode</div>
+            <a href="#slash-commands" class="nav-link">Slash Commands</a>
+            <a href="#keyboard" class="nav-link">Keyboard Shortcuts</a>
+            <a href="#modes" class="nav-link">Modes</a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">Tools</div>
+            <a href="#tools-filesystem" class="nav-link">Filesystem</a>
+            <a href="#tools-shell" class="nav-link">Shell</a>
+            <a href="#tools-web" class="nav-link">Web</a>
+            <a href="#tools-desktop" class="nav-link">Desktop Control</a>
+            <a href="#tools-agent" class="nav-link">Agent Tools</a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">Features</div>
+            <a href="#context-management" class="nav-link">Context Management</a>
+            <a href="#memory-system" class="nav-link">Memory System</a>
+            <a href="#skills-system" class="nav-link">Skills System</a>
+            <a href="#security" class="nav-link">Security</a>
+        </div>
+
+        <div class="nav-section">
+            <div class="nav-section-title">Configuration</div>
+            <a href="#config-models" class="nav-link">Model Roles</a>
+            <a href="#config-files" class="nav-link">Config Files</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main">
+        <!-- Hero -->
+        <div class="hero">
+            <h1 class="hero-title">My Agent Documentation</h1>
+            <p class="hero-subtitle">A powerful personal AI coding assistant with persistent memory, tool execution, and multi-agent orchestration.</p>
+            <div class="hero-badges">
+                <span class="hero-badge">🦀 Rust</span>
+                <span class="hero-badge">🧠 Persistent Memory</span>
+                <span class="hero-badge">🔧 Tool Calling</span>
+                <span class="hero-badge">🖥️ Desktop Control</span>
+                <span class="hero-badge">🎤 Voice Support</span>
+            </div>
+        </div>
+
+        <!-- Search -->
+        <div class="search-container">
+            <input type="text" class="search-input" placeholder="🔍 Search documentation..." id="searchInput">
+        </div>
+
+        <!-- Overview Section -->
+        <section id="overview" class="section">
+            <h2 class="section-title"><span class="icon">📋</span> Overview</h2>
+            <p class="section-desc">My Agent is a CLI-based AI assistant that can read/write files, execute commands, browse the web, and control your desktop - all with persistent memory that learns from every conversation.</p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon blue">🧠</div>
+                        <h3 class="card-title">Persistent Memory</h3>
+                    </div>
+                    <p class="card-desc">Conversations are saved automatically with semantic search. The agent remembers context from past sessions.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon green">🔧</div>
+                        <h3 class="card-title">Tool Execution</h3>
+                    </div>
+                    <p class="card-desc">Read/write files, run shell commands, fetch URLs, and control the desktop with mouse/keyboard.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon purple">🤖</div>
+                        <h3 class="card-title">Multi-Agent</h3>
+                    </div>
+                    <p class="card-desc">Spawn specialized agents for complex tasks - coding, research, analysis, and more.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon orange">🎨</div>
+                        <h3 class="card-title">Dynamic Skills</h3>
+                    </div>
+                    <p class="card-desc">Create and execute custom skills using Rhai scripting with LLM-generated code.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Installation -->
+        <section id="installation" class="section">
+            <h2 class="section-title"><span class="icon">📦</span> Installation</h2>
+
+            <div class="code-block">
+# Build from source
+git clone https://github.com/yourname/my-agent
+cd my-agent
+cargo build --release
+
+# Install system dependencies (Linux)
+sudo apt install libxdo-dev libxcb1-dev
+
+# Run
+./target/release/my-agent interactive -P</div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">Set API Key</h3>
+            <div class="code-block">my-agent config --set-api-key YOUR_OPENROUTER_KEY</div>
+        </section>
+
+        <!-- Quick Start -->
+        <section id="quickstart" class="section">
+            <h2 class="section-title"><span class="icon">🚀</span> Quick Start</h2>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent -P</code>
+                    <span class="cmd-desc">Start interactive mode with persistent memory</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent -P -r</code>
+                    <span class="cmd-desc">Resume last conversation</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent doctor</code>
+                    <span class="cmd-desc">Run diagnostics and self-healing</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- CLI Commands -->
+        <section id="cli-interactive" class="section">
+            <h2 class="section-title"><span class="icon">💬</span> interactive</h2>
+            <p class="section-desc">Start an interactive chat session with tool capabilities.</p>
+
+            <div class="code-block">my-agent interactive [OPTIONS]</div>
+
+            <table class="params-table">
+                <thead>
+                    <tr>
+                        <th>Option</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code class="param-name">-P, --persistent</code></td>
+                        <td>Enable persistent memory (save conversations)</td>
+                    </tr>
+                    <tr>
+                        <td><code class="param-name">-r, --resume</code></td>
+                        <td>Resume most recent conversation</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section id="cli-memory" class="section">
+            <h2 class="section-title"><span class="icon">🧠</span> memory</h2>
+            <p class="section-desc">Manage the memory database (embeddings, stats, cleanup).</p>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent memory stats</code>
+                    <span class="cmd-desc">Show database statistics</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent memory search "query"</code>
+                    <span class="cmd-desc">Semantic search across conversations</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent memory add --content "..." --source user</code>
+                    <span class="cmd-desc">Add knowledge to the database</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent memory cleanup --keep 100</code>
+                    <span class="cmd-desc">Remove old conversations</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent memory init-embeddings</code>
+                    <span class="cmd-desc">Initialize embedding model</span>
+                </div>
+            </div>
+        </section>
+
+        <section id="cli-config" class="section">
+            <h2 class="section-title"><span class="icon">⚙️</span> config</h2>
+            <p class="section-desc">Configure the agent settings.</p>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent config</code>
+                    <span class="cmd-desc">Show current configuration</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent config --set-api-key KEY</code>
+                    <span class="cmd-desc">Set OpenRouter API key (stored in keyring)</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent config --set-model ROLE MODEL</code>
+                    <span class="cmd-desc">Set model for a role (orchestrator, code, research, etc.)</span>
+                </div>
+            </div>
+        </section>
+
+        <section id="cli-doctor" class="section">
+            <h2 class="section-title"><span class="icon">🏥</span> doctor</h2>
+            <p class="section-desc">Run diagnostics and self-healing.</p>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent doctor</code>
+                    <span class="cmd-desc">Run all health checks</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent doctor --fix</code>
+                    <span class="cmd-desc">Auto-fix issues where possible</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent doctor --update</code>
+                    <span class="cmd-desc">Self-update from GitHub releases</span>
+                </div>
+            </div>
+
+            <p style="margin-top: 16px; color: var(--text-secondary);">Checks: config, API keys, system requirements, network, filesystem, CVEs, outdated dependencies.</p>
+        </section>
+
+        <section id="cli-skills" class="section">
+            <h2 class="section-title"><span class="icon">🎨</span> skills</h2>
+            <p class="section-desc">Manage dynamic skills with Rhai scripting.</p>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent skills list</code>
+                    <span class="cmd-desc">List available skills</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent skills create "description"</code>
+                    <span class="cmd-desc">Generate a new skill with LLM</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent skills run SKILL_NAME</code>
+                    <span class="cmd-desc">Execute a skill</span>
+                </div>
+            </div>
+        </section>
+
+        <section id="cli-soul" class="section">
+            <h2 class="section-title"><span class="icon">💫</span> soul</h2>
+            <p class="section-desc">Manage the soul/heartbeat system for proactive behavior.</p>
+
+            <div class="cmd-list">
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent soul start</code>
+                    <span class="cmd-desc">Start the heartbeat daemon</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent soul stop</code>
+                    <span class="cmd-desc">Stop the heartbeat</span>
+                </div>
+                <div class="cmd-item">
+                    <code class="cmd-syntax">my-agent soul status</code>
+                    <span class="cmd-desc">Check heartbeat status</span>
+                </div>
+            </div>
+        </section>
+
+        <!-- Slash Commands -->
+        <section id="slash-commands" class="section">
+            <h2 class="section-title"><span class="icon">📝</span> Slash Commands</h2>
+            <p class="section-desc">Commands available during interactive sessions.</p>
+
+            <div class="tool-category">
+                <table class="params-table">
+                    <thead>
+                        <tr>
+                            <th>Command</th>
+                            <th>Description</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code class="param-name">/help</code></td>
+                            <td>Show help menu</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/clear</code> / <code class="param-name">/new</code></td>
+                            <td>Start a new conversation</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/conversations</code></td>
+                            <td>List saved conversations</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/load &lt;id&gt;</code></td>
+                            <td>Load a saved conversation</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/context</code></td>
+                            <td>Show token usage and context limits</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/memory</code></td>
+                            <td>Show memory statistics</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/save</code></td>
+                            <td>Save current conversation</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/mode [chat|tools|orchestrate|plan]</code></td>
+                            <td>Change interaction mode</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/model</code></td>
+                            <td>Show or change current model</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/tools</code></td>
+                            <td>List available tools</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/agents</code></td>
+                            <td>Show agent status</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/soul</code></td>
+                            <td>View/edit personality</td>
+                        </tr>
+                        <tr>
+                            <td><code class="param-name">/exit</code></td>
+                            <td>Exit session (auto-saves)</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Keyboard Shortcuts -->
+        <section id="keyboard" class="section">
+            <h2 class="section-title"><span class="icon">⌨️</span> Keyboard Shortcuts</h2>
+
+            <div class="card-grid">
+                <div class="card">
+                    <h3 class="card-title">Navigation</h3>
+                    <div class="cmd-list" style="margin-top: 12px;">
+                        <div class="cmd-item">
+                            <kbd class="kbd">Tab</kbd>
+                            <span class="cmd-desc">Autocomplete</span>
+                        </div>
+                        <div class="cmd-item">
+                            <kbd class="kbd">↑</kbd> <kbd class="kbd">↓</kbd>
+                            <span class="cmd-desc">History navigation</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="card">
+                    <h3 class="card-title">Quick Actions</h3>
+                    <div class="cmd-list" style="margin-top: 12px;">
+                        <div class="cmd-item">
+                            <kbd class="kbd">c</kbd>
+                            <span class="cmd-desc">Clear conversation</span>
+                        </div>
+                        <div class="cmd-item">
+                            <kbd class="kbd">m</kbd>
+                            <span class="cmd-desc">Change mode</span>
+                        </div>
+                        <div class="cmd-item">
+                            <kbd class="kbd">s</kbd>
+                            <span class="cmd-desc">Save conversation</span>
+                        </div>
+                        <div class="cmd-item">
+                            <kbd class="kbd">q</kbd>
+                            <span class="cmd-desc">Quit</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Modes -->
+        <section id="modes" class="section">
+            <h2 class="section-title"><span class="icon">🎯</span> Interaction Modes</h2>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon blue">💬</div>
+                        <h3 class="card-title">chat</h3>
+                    </div>
+                    <p class="card-desc">Simple conversation with no tools. Best for quick questions.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon green">🔧</div>
+                        <h3 class="card-title">tools</h3>
+                    </div>
+                    <p class="card-desc">Full tool access - read/write files, run commands, browse web. Default mode.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon purple">🤖</div>
+                        <h3 class="card-title">orchestrate</h3>
+                    </div>
+                    <p class="card-desc">Spawn specialized agents for complex multi-step tasks.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon orange">📋</div>
+                        <h3 class="card-title">plan</h3>
+                    </div>
+                    <p class="card-desc">Show execution plan and require approval before proceeding.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tools: Filesystem -->
+        <section id="tools-filesystem" class="section">
+            <h2 class="section-title"><span class="icon">📁</span> Filesystem Tools</h2>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">read_file</code> - Read file contents</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>File path to read</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">write_file</code> - Write content to a file</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>File path to write</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">content</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Content to write</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">list_directory</code> - List directory contents</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Directory path to list</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">recursive</code></td>
+                                <td><span class="param-type">boolean</span></td>
+                                <td>optional</td>
+                                <td>List recursively</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">find_files</code> - Find files by pattern</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">pattern</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Glob pattern (e.g., "*.rs")</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>optional</td>
+                                <td>Directory to search</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">search_content</code> - Search for text in files</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">pattern</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Search pattern (regex)</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>optional</td>
+                                <td>Directory to search</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">file_info</code> - Get file metadata</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">path</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>File path</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tools: Shell -->
+        <section id="tools-shell" class="section">
+            <h2 class="section-title"><span class="icon">💻</span> Shell Tools</h2>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">execute_command</code> - Run a shell command <span class="badge badge-beta">Requires Approval</span></span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">command</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Shell command to execute</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">timeout</code></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>optional</td>
+                                <td>Timeout in seconds</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p style="margin-top: 12px; color: var(--text-secondary);">Commands require approval for security. The sandbox restricts access to allowed directories.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tools: Web -->
+        <section id="tools-web" class="section">
+            <h2 class="section-title"><span class="icon">🌐</span> Web Tools</h2>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">fetch_url</code> - Fetch web content</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">url</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>URL to fetch</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">selector</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>optional</td>
+                                <td>CSS selector to extract content</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">web_search</code> - Search the web</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">query</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Search query</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">num_results</code></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>optional</td>
+                                <td>Number of results (default: 5)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tools: Desktop -->
+        <section id="tools-desktop" class="section">
+            <h2 class="section-title"><span class="icon">🖥️</span> Desktop Control Tools <span class="badge badge-new">NEW</span></h2>
+            <p class="section-desc">Control your desktop with mouse, keyboard, and screenshot capture. All control actions require approval.</p>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">capture_screen</code> - Take a screenshot</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">region</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>optional</td>
+                                <td>"full" or "region"</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">x, y, width, height</code></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td>optional</td>
+                                <td>Region coordinates</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p style="margin-top: 12px; color: var(--accent-green);">✓ No approval required - automatic capture</p>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">mouse_click</code> - Click at position <span class="badge badge-beta">Requires Approval</span></span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">x</code></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>X coordinate</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">y</code></td>
+                                <td><span class="param-type">integer</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Y coordinate</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">button</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td>optional</td>
+                                <td>"left", "right", "middle"</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">keyboard_type</code> - Type text <span class="badge badge-beta">Requires Approval</span></span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">text</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Text to type</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">keyboard_hotkey</code> - Press key combination <span class="badge badge-beta">Requires Approval</span></span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">keys</code></td>
+                                <td><span class="param-type">array</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Keys to press (e.g., ["ctrl", "c"])</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <div class="code-block" style="margin-top: 12px;">// Example
+{ "keys": ["ctrl", "shift", "s"] }  // Save As</div>
+                </div>
+            </div>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">open_application</code> - Launch an app <span class="badge badge-beta">Requires Approval</span></span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">name</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Application name (e.g., "firefox", "code")</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- Tools: Agent -->
+        <section id="tools-agent" class="section">
+            <h2 class="section-title"><span class="icon">🤖</span> Agent Tools</h2>
+
+            <div class="accordion" onclick="toggleAccordion(this)">
+                <div class="accordion-header">
+                    <span><code class="param-name">spawn_agents</code> - Spawn specialized agents</span>
+                    <span class="accordion-arrow">▼</span>
+                </div>
+                <div class="accordion-content">
+                    <table class="params-table">
+                        <thead>
+                            <tr><th>Parameter</th><th>Type</th><th>Required</th><th>Description</th></tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td><code class="param-name">main_task</code></td>
+                                <td><span class="param-type">string</span></td>
+                                <td><span class="param-required">required</span></td>
+                                <td>Main task description</td>
+                            </tr>
+                            <tr>
+                                <td><code class="param-name">subtasks</code></td>
+                                <td><span class="param-type">array</span></td>
+                                <td>optional</td>
+                                <td>List of subtasks with agent types</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                    <p style="margin-top: 12px; color: var(--text-secondary);">Agent types: code, research, reasoning, utility</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Context Management -->
+        <section id="context-management" class="section">
+            <h2 class="section-title"><span class="icon">📊</span> Context Management</h2>
+            <p class="section-desc">Automatic context window management to prevent token overflow.</p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon cyan">📏</div>
+                        <h3 class="card-title">Token Estimation</h3>
+                    </div>
+                    <p class="card-desc">Tracks token count for all messages and warns when approaching model limits.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon green">✂️</div>
+                        <h3 class="card-title">Auto-Trimming</h3>
+                    </div>
+                    <p class="card-desc">Automatically summarizes old messages when context exceeds limits.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon purple">🧠</div>
+                        <h3 class="card-title">Memory Injection</h3>
+                    </div>
+                    <p class="card-desc">Injects relevant context from past conversations using semantic search.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon orange">🎯</div>
+                        <h3 class="card-title">Model-Aware</h3>
+                    </div>
+                    <p class="card-desc">Adapts to different model context sizes (Claude: 200K, GPT-4: 128K, Gemini: 1M).</p>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">Model Context Limits</h3>
+            <table class="params-table">
+                <thead>
+                    <tr><th>Model</th><th>Context Limit</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>Claude 3 / 3.5</td><td>200,000 tokens</td></tr>
+                    <tr><td>GPT-4 Turbo / 4o</td><td>128,000 tokens</td></tr>
+                    <tr><td>Gemini 1.5</td><td>1,000,000 tokens</td></tr>
+                    <tr><td>GPT-4</td><td>8,000 tokens</td></tr>
+                    <tr><td>Mistral</td><td>32,000 tokens</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Memory System -->
+        <section id="memory-system" class="section">
+            <h2 class="section-title"><span class="icon">🧠</span> Memory System</h2>
+            <p class="section-desc">Persistent memory with semantic search powered by SQLite + vector embeddings.</p>
+
+            <div class="code-block">Database: ~/.local/share/my-agent/memory.db</div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">Features</h3>
+            <ul style="margin-left: 20px; color: var(--text-secondary);">
+                <li>Full-text search (FTS5) with Porter stemming</li>
+                <li>Vector embeddings (OpenAI text-embedding-3-small, 1536 dims)</li>
+                <li>Hybrid search combining keyword + semantic</li>
+                <li>Knowledge base for storing facts</li>
+                <li>LRU cache for embedding lookups</li>
+            </ul>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">Memory Tables</h3>
+            <table class="params-table">
+                <thead>
+                    <tr><th>Table</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>conversations</td><td>Conversation records with embeddings</td></tr>
+                    <tr><td>message_embeddings</td><td>Per-message embeddings for fine-grained search</td></tr>
+                    <tr><td>knowledge</td><td>User facts and preferences</td></tr>
+                    <tr><td>conversations_fts</td><td>FTS5 index for conversations</td></tr>
+                    <tr><td>messages_fts</td><td>FTS5 index for messages</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Skills System -->
+        <section id="skills-system" class="section">
+            <h2 class="section-title"><span class="icon">🎨</span> Skills System</h2>
+            <p class="section-desc">Dynamic skill execution with Rhai scripting engine.</p>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon blue">📝</div>
+                        <h3 class="card-title">LLM-Generated</h3>
+                    </div>
+                    <p class="card-desc">Skills are generated by the LLM as Rhai scripts based on natural language descriptions.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon green">🔒</div>
+                        <h3 class="card-title">Sandboxed</h3>
+                    </div>
+                    <p class="card-desc">Safe execution with limits on expressions, functions, and strings.</p>
+                </div>
+            </div>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">Permission-Based Functions</h3>
+            <table class="params-table">
+                <thead>
+                    <tr><th>Permission</th><th>Functions</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>ReadFiles</td><td>read_file(), file_exists(), list_dir(), file_info()</td></tr>
+                    <tr><td>WriteFiles</td><td>write_file(), append_file(), create_dir(), delete_file()</td></tr>
+                    <tr><td>ExecuteCommands</td><td>run_command()</td></tr>
+                    <tr><td>NetworkAccess</td><td>http_get(), http_post()</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Security -->
+        <section id="security" class="section">
+            <h2 class="section-title"><span class="icon">🔒</span> Security</h2>
+
+            <div class="card-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon red">🔐</div>
+                        <h3 class="card-title">API Key Storage</h3>
+                    </div>
+                    <p class="card-desc">API keys are stored securely in the system keyring, never in config files.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon orange">📁</div>
+                        <h3 class="card-title">Filesystem Sandbox</h3>
+                    </div>
+                    <p class="card-desc">File access is restricted to allowed directories. Default allows current working directory.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon purple">✅</div>
+                        <h3 class="card-title">Approval System</h3>
+                    </div>
+                    <p class="card-desc">Dangerous operations (shell commands, desktop control) require explicit approval.</p>
+                </div>
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-icon cyan">🛡️</div>
+                        <h3 class="card-title">CVE Scanning</h3>
+                    </div>
+                    <p class="card-desc">Built-in vulnerability scanning with cargo-audit integration.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Config: Models -->
+        <section id="config-models" class="section">
+            <h2 class="section-title"><span class="icon">🤖</span> Model Roles</h2>
+            <p class="section-desc">Configure different models for different agent roles.</p>
+
+            <div class="code-block">my-agent config --set-model &lt;role&gt; &lt;model&gt;</div>
+
+            <table class="params-table">
+                <thead>
+                    <tr><th>Role</th><th>Default Model</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>orchestrator</td><td>anthropic/claude-3.5-sonnet</td><td>Task planning and coordination</td></tr>
+                    <tr><td>code</td><td>anthropic/claude-3.5-sonnet</td><td>Coding and file operations</td></tr>
+                    <tr><td>research</td><td>google/gemini-flash-1.5</td><td>Web search and analysis</td></tr>
+                    <tr><td>reasoning</td><td>deepseek/deepseek-r1</td><td>Complex reasoning tasks</td></tr>
+                    <tr><td>utility</td><td>google/gemini-flash-1.5</td><td>General tasks, file ops, exploration</td></tr>
+                    <tr><td>chat</td><td>x-ai/grok-4.1-fast</td><td>Simple conversation</td></tr>
+                    <tr><td>vision</td><td>google/gemini-flash-1.5</td><td>Screenshots and image analysis</td></tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Config Files -->
+        <section id="config-files" class="section">
+            <h2 class="section-title"><span class="icon">📁</span> Configuration Files</h2>
+
+            <table class="params-table">
+                <thead>
+                    <tr><th>File</th><th>Location</th><th>Purpose</th></tr>
+                </thead>
+                <tbody>
+                    <tr><td>config.toml</td><td>~/.config/my-agent/</td><td>Main configuration</td></tr>
+                    <tr><td>personality.json</td><td>~/.config/my-agent/</td><td>Agent personality settings</td></tr>
+                    <tr><td>memory.db</td><td>~/.local/share/my-agent/</td><td>Persistent memory database</td></tr>
+                    <tr><td>skills/</td><td>~/.local/share/my-agent/</td><td>Custom skills directory</td></tr>
+                </tbody>
+            </table>
+
+            <h3 style="margin-top: 24px; margin-bottom: 12px;">config.toml Example</h3>
+            <div class="code-block">[models]
+orchestrator = "anthropic/claude-3.5-sonnet"
+code = "anthropic/claude-3.5-sonnet"
+chat = "x-ai/grok-4.1-fast"
+vision = "google/gemini-flash-1.5"
+
+[security]
+require_command_approval = true
+sandbox_enabled = true
+
+[budget]
+daily_limit = 10.0
+monthly_limit = 100.0</div>
+        </section>
+
+        <!-- Footer -->
+        <footer style="text-align: center; padding: 40px; color: var(--text-secondary); border-top: 1px solid var(--border-color); margin-top: 60px;">
+            <p>My Agent v0.1.0 &bull; Built with 🦀 Rust</p>
+            <p style="margin-top: 8px; font-size: 0.9rem;">Documentation generated from source code</p>
+        </footer>
+    </main>
+
+    <script>
+        // Accordion toggle
+        function toggleAccordion(el) {
+            el.classList.toggle('open');
+        }
+
+        // Navigation active state
+        document.querySelectorAll('.nav-link').forEach(link => {
+            link.addEventListener('click', function() {
+                document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                this.classList.add('active');
+            });
+        });
+
+        // Search functionality
+        document.getElementById('searchInput').addEventListener('input', function(e) {
+            const query = e.target.value.toLowerCase();
+            document.querySelectorAll('.section, .card, .accordion').forEach(el => {
+                const text = el.textContent.toLowerCase();
+                el.style.display = text.includes(query) ? '' : 'none';
+            });
+        });
+
+        // Smooth scroll
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>
