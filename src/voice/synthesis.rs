@@ -34,6 +34,7 @@ use tracing::{info, debug, warn};
 
 use crate::orchestrator::{OrchestrationPlan, AgentSpec, ExecutionMode};
 use crate::orchestrator::bus::AgentMessage;
+#[cfg(feature = "voice")]
 use crate::voice::tts::{TtsEngine, TtsConfig};
 
 /// Synthesis strategy for combining agent outputs
@@ -75,6 +76,7 @@ pub struct SynthesisConfig {
     /// Enable contradiction detection
     pub detect_contradictions: bool,
     /// TTS configuration for voice output
+    #[cfg(feature = "voice")]
     pub tts_config: Option<TtsConfig>,
 }
 
@@ -87,6 +89,7 @@ impl Default for SynthesisConfig {
             add_transitions: true,
             confidence_threshold: 0.5,
             detect_contradictions: true,
+            #[cfg(feature = "voice")]
             tts_config: None,
         }
     }
@@ -644,6 +647,7 @@ impl VoiceResponseBuilder {
     }
 
     /// Build and synthesize speech
+    #[cfg(feature = "voice")]
     pub async fn build_and_speak(&self, tts: &TtsEngine) -> Result<Vec<u8>> {
         let result = self.build()?;
         let text = result.voice_text.as_ref().unwrap_or(&result.text);

@@ -2,6 +2,8 @@
 
 pub mod http;
 pub mod auth;
+pub mod realtime_voice;
+pub mod device;
 
 use anyhow::{Result, Context};
 use axum::{
@@ -18,6 +20,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use axum::middleware;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing::{info, debug};
@@ -44,6 +47,7 @@ pub struct ServerState {
     pub http_client: Client,
     pub voice_mode: VoiceMode,
     pub auth_state: Arc<AuthState>,
+    pub device_registry: Arc<device::DeviceRegistry>,
 }
 
 /// WebSocket message types
@@ -108,6 +112,7 @@ pub async fn start(
         http_client: Client::new(),
         voice_mode,
         auth_state,
+        device_registry: device::DeviceRegistry::new(),
     };
 
     let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
@@ -118,17 +123,35 @@ pub async fn start(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Build the app
-    let app = Router::new()
+    // Protected routes (require JWT auth)
+    let protected = Router::new()
+        .route("/api/chat", post(http::chat_handler))
+        .route("/api/devices", get(http::list_devices_handler))
+        .route("/api/devices/switch", post(http::switch_device_handler))
+        .route("/ws", get(websocket_handler))
+        .route("/voice-ws", get(voice_websocket_handler))
+        .route("/realtime-voice-ws", get(realtime_voice::ws_handler))
+        .layer(middleware::from_fn_with_state(
+            state.auth_state.clone(),
+            auth::auth_middleware,
+        ));
+
+    // Public routes (no auth required)
+    // Note: /ws/device-agent uses token in query params (WebSocket can't set headers)
+    let public = Router::new()
         .route("/", get(index_page))
         .route("/simple-voice", get(simple_voice_page))
-        .route("/api/chat", post(http::chat_handler))
+        .route("/voice-chat", get(voice_chat_page))
         .route("/api/auth/login", post(http::login_handler))
         .route("/api/auth/refresh", post(http::refresh_handler))
         .route("/api/auth/logout", post(http::logout_handler))
         .route("/api/status", get(http::status_handler))
-        .route("/ws", get(websocket_handler))
-        .route("/voice-ws", get(voice_websocket_handler))
+        .route("/ws/device-agent", get(device::device_ws_handler));
+
+    // Merge protected and public routes
+    let app = Router::new()
+        .merge(protected)
+        .merge(public)
         .layer(cors)
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -376,6 +399,16 @@ fn timestamp() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as u64
+}
+
+/// Serve the voice-chat HTML page (mobile real-time voice UI)
+async fn voice_chat_page() -> (axum::http::HeaderMap, Html<String>) {
+    let html_content = tokio::fs::read_to_string("/home/rapheal/Projects/my-agent/src/server/voice-chat.html").await
+        .unwrap_or_else(|_| "<html><body>voice-chat.html not found</body></html>".to_string());
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert("cache-control", "no-cache, no-store, must-revalidate".parse().unwrap());
+    headers.insert("pragma", "no-cache".parse().unwrap());
+    (headers, Html(html_content))
 }
 
 /// Serve the simple-voice HTML page

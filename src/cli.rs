@@ -76,6 +76,9 @@ enum Commands {
         /// Set Hugging Face API key (for voice features)
         #[arg(long)]
         set_hf_api_key: Option<String>,
+        /// Set server password for remote access authentication
+        #[arg(long)]
+        set_password: bool,
         /// Show current configuration
         #[arg(long)]
         show: bool,
@@ -130,6 +133,21 @@ enum Commands {
         /// Path to SSL private key
         #[arg(long)]
         key: Option<String>,
+        /// Start a Cloudflare Tunnel for public HTTPS access (requires cloudflared)
+        #[arg(long)]
+        tunnel: bool,
+    },
+    /// Connect to a remote server as a device agent
+    Connect {
+        /// Server URL (e.g., https://abc-123.trycloudflare.com)
+        #[arg(long)]
+        server: String,
+        /// Device name (default: hostname)
+        #[arg(long)]
+        name: Option<String>,
+        /// JWT access token for authentication
+        #[arg(long)]
+        token: String,
     },
     /// Orchestrate complex multi-agent tasks
     Orchestrate {
@@ -354,13 +372,32 @@ pub async fn run() -> Result<()> {
                 crate::agent::search_conversations(&query, limit).await?;
             }
         }
-        Some(Commands::Config { set_api_key, set_hf_api_key, show, set_model, get_model, list_models }) => {
+        Some(Commands::Config { set_api_key, set_hf_api_key, set_password, show, set_model, get_model, list_models }) => {
             if let Some(key) = set_api_key {
                 crate::security::set_api_key(&key)?;
                 println!("OpenRouter API key stored securely in keyring.");
             } else if let Some(key) = set_hf_api_key {
                 crate::security::set_hf_api_key(&key)?;
                 println!("Hugging Face API key stored securely in keyring.");
+            } else if set_password {
+                // Prompt for password with echo disabled
+                use std::io::Write;
+                eprint!("Enter server password: ");
+                std::io::stderr().flush()?;
+                let password = rpassword_read()?;
+                eprint!("Confirm server password: ");
+                std::io::stderr().flush()?;
+                let confirm = rpassword_read()?;
+                if password != confirm {
+                    eprintln!("Passwords do not match.");
+                    std::process::exit(1);
+                }
+                if password.is_empty() {
+                    eprintln!("Password cannot be empty.");
+                    std::process::exit(1);
+                }
+                crate::security::set_server_password(&password)?;
+                println!("Server password stored securely.");
             } else if let Some(args) = set_model {
                 if args.len() >= 2 {
                     crate::config::set_model(&args[0], &args[1])?;
@@ -378,6 +415,7 @@ pub async fn run() -> Result<()> {
                 println!("Configuration options:");
                 println!("  --set-api-key <key>      Set your OpenRouter API key");
                 println!("  --set-hf-api-key <key>   Set your Hugging Face API key");
+                println!("  --set-password           Set server password for remote access");
                 println!("  --show                   Display current configuration");
                 println!("  --set-model <role> <id>  Set model for a role");
                 println!("  --get-model <role>       Get model for a role");
@@ -447,7 +485,7 @@ pub async fn run() -> Result<()> {
                 }
             }
         }
-        Some(Commands::Serve { port, host, https, cert, key }) => {
+        Some(Commands::Serve { port, host, https, cert, key, tunnel }) => {
             println!("Starting web server on {}:{}", host, port);
             if https {
                 println!("✓ HTTPS enabled");
@@ -458,7 +496,67 @@ pub async fn run() -> Result<()> {
                     println!("  Private key: {}", key_path);
                 }
             }
+
+            if tunnel {
+                // Spawn cloudflared tunnel in background
+                let tunnel_port = port;
+                tokio::spawn(async move {
+                    // Small delay to let the server start binding
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    let url = format!("http://localhost:{}", tunnel_port);
+                    println!("Starting Cloudflare Tunnel to {}...", url);
+                    match tokio::process::Command::new("cloudflared")
+                        .args(["tunnel", "--url", &url])
+                        .stderr(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::null())
+                        .spawn()
+                    {
+                        Ok(mut child) => {
+                            // Parse the tunnel URL from cloudflared stderr
+                            if let Some(stderr) = child.stderr.take() {
+                                use tokio::io::{AsyncBufReadExt, BufReader};
+                                let mut reader = BufReader::new(stderr);
+                                let mut line = String::new();
+                                while reader.read_line(&mut line).await.unwrap_or(0) > 0 {
+                                    if let Some(pos) = line.find("https://") {
+                                        if line.contains(".trycloudflare.com") {
+                                            let end = line[pos..].find(|c: char| c.is_whitespace() || c == '"').unwrap_or(line.len() - pos);
+                                            let tunnel_url = &line[pos..pos + end];
+                                            println!();
+                                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                            println!("  Tunnel URL: {}", tunnel_url);
+                                            println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                                            println!();
+                                            break;
+                                        }
+                                    }
+                                    line.clear();
+                                }
+                            }
+                            // Keep the child alive — it will be killed when the server exits
+                            let _ = child.wait().await;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to start cloudflared: {}", e);
+                            eprintln!("Install it: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/");
+                        }
+                    }
+                });
+            }
+
             crate::server::start(&host, port, https, cert, key).await?;
+        }
+        Some(Commands::Connect { server, name, token }) => {
+            let device_name = name.unwrap_or_else(|| {
+                std::process::Command::new("hostname")
+                    .output()
+                    .ok()
+                    .and_then(|o| String::from_utf8(o.stdout).ok())
+                    .map(|s| s.trim().to_string())
+                    .unwrap_or_else(|| "device".to_string())
+            });
+            println!("Connecting to {} as '{}'...", server, device_name);
+            run_device_agent(&server, &device_name, &token).await?;
         }
         Some(Commands::Orchestrate { task, verbose, interactive, plan_only }) => {
             crate::orchestrator::cli::run_orchestrator(Some(task), verbose, interactive, plan_only).await?;
@@ -599,7 +697,8 @@ async fn show_conversation(id: &str) -> Result<()> {
             }
         }
         None => {
-            println!("Conversation not found: {}", id);
+            eprintln!("Conversation not found: {}", id);
+            eprintln!("Use 'my-agent history list' to see available conversations.");
         }
     }
 
@@ -610,12 +709,32 @@ async fn show_conversation(id: &str) -> Result<()> {
 async fn delete_conversation(id: &str) -> Result<()> {
     let store = crate::memory::MemoryStore::default_store().await?;
 
-    match store.delete_conversation(id).await {
-        Ok(()) => {
-            println!("✓ Conversation deleted: {}", id);
+    // Verify the conversation exists first
+    match store.load_conversation(id).await? {
+        Some(record) => {
+            let title = record.title.as_deref().unwrap_or("Untitled");
+            println!("About to delete conversation: {} ({})", title, &id[..id.len().min(8)]);
+            println!("  Messages: {}", record.messages.len());
+            println!("  Created: {}", record.created_at.format("%Y-%m-%d %H:%M:%S"));
+            println!();
+            println!("Are you sure? [y/N]:");
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input)?;
+
+            if input.trim().to_lowercase() != "y" && input.trim().to_lowercase() != "yes" {
+                println!("Cancelled.");
+                return Ok(());
+            }
+
+            match store.delete_conversation(id).await {
+                Ok(()) => println!("Conversation deleted: {}", &id[..id.len().min(8)]),
+                Err(e) => eprintln!("Failed to delete conversation: {}", e),
+            }
         }
-        Err(e) => {
-            println!("✗ Failed to delete conversation: {}", e);
+        None => {
+            eprintln!("Conversation not found: {}", id);
+            eprintln!("Use 'my-agent history list' to see available conversations.");
         }
     }
 
@@ -624,8 +743,19 @@ async fn delete_conversation(id: &str) -> Result<()> {
 
 /// Clear all conversation history
 async fn clear_history(skip_confirm: bool) -> Result<()> {
+    let store = crate::memory::MemoryStore::default_store().await?;
+    let stats = store.sqlite().stats().await?;
+
+    if stats.total_conversations == 0 {
+        println!("No conversation history found.");
+        return Ok(());
+    }
+
     if !skip_confirm {
-        println!("⚠️  This will delete ALL conversation history!");
+        println!("This will delete ALL {} conversation(s) and {} message(s)!",
+            stats.total_conversations, stats.total_messages);
+        println!("Knowledge entries ({}) will be preserved.", stats.total_knowledge);
+        println!();
         println!("Type 'yes' to confirm:");
 
         let mut input = String::new();
@@ -637,19 +767,8 @@ async fn clear_history(skip_confirm: bool) -> Result<()> {
         }
     }
 
-    // Get memory database path
-    let data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("my-agent");
-
-    let db_path = data_dir.join("memory.db");
-
-    if db_path.exists() {
-        std::fs::remove_file(&db_path)?;
-        println!("✓ All conversation history cleared.");
-    } else {
-        println!("No conversation history found.");
-    }
+    let deleted = store.sqlite().cleanup_old(0).await?;
+    println!("Cleared {} conversation(s).", deleted);
 
     Ok(())
 }
@@ -785,12 +904,34 @@ async fn list_knowledge(limit: usize) -> Result<()> {
     let store = crate::memory::MemoryStore::default_store().await?;
     let stats = store.sqlite().stats().await?;
 
-    println!("\n📚 Knowledge Base ({} entries)", stats.total_knowledge);
-    println!("═══════════════════════════════════════");
+    println!("\nKnowledge Base ({} entries)", stats.total_knowledge);
+    println!("=======================================");
 
-    // Note: We'd need to implement a list_knowledge method for this
-    // For now, show stats only
-    println!("  Use 'my-agent memory search <query>' to find knowledge");
+    if stats.total_knowledge == 0 {
+        println!("  No knowledge entries yet.");
+        println!("  Use 'my-agent memory add --content \"...\"' to add knowledge.");
+        return Ok(());
+    }
+
+    let entries = store.list_knowledge(limit, 0).await?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        let content_preview = if entry.content.len() > 80 {
+            format!("{}...", entry.content.chars().take(80).collect::<String>())
+        } else {
+            entry.content.clone()
+        };
+        println!("{}. [{}] (importance: {:.1}, source: {})",
+            i + 1, &entry.id[..entry.id.len().min(8)], entry.importance, entry.source);
+        println!("   {}", content_preview);
+        println!("   Created: {}  Accessed: {} times",
+            entry.created_at.format("%Y-%m-%d %H:%M"), entry.access_count);
+        println!();
+    }
+
+    if stats.total_knowledge > limit {
+        println!("Showing {} of {}. Use --limit to see more.", limit, stats.total_knowledge);
+    }
 
     Ok(())
 }
@@ -833,4 +974,148 @@ async fn init_embeddings(force: bool) -> Result<()> {
     println!("  Uses real embeddings: {}", model.uses_real_embeddings());
 
     Ok(())
+}
+
+/// Run as a device agent, connecting to a remote server
+async fn run_device_agent(server_url: &str, device_name: &str, token: &str) -> Result<()> {
+    use tokio_tungstenite::{connect_async, tungstenite::Message as WsMsg};
+    use futures_util::{SinkExt, StreamExt};
+
+    // Build WebSocket URL
+    let ws_scheme = if server_url.starts_with("https://") { "wss" } else { "ws" };
+    let host = server_url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .trim_end_matches('/');
+    let platform = std::env::consts::OS;
+    let ws_url = format!(
+        "{}://{}/ws/device-agent?name={}&platform={}&token={}",
+        ws_scheme, host, device_name, platform, token
+    );
+
+    println!("Connecting to WebSocket...");
+    let (ws_stream, _) = connect_async(&ws_url).await
+        .map_err(|e| anyhow::anyhow!("Failed to connect to server: {}", e))?;
+
+    let (mut ws_tx, mut ws_rx) = ws_stream.split();
+
+    // Determine capabilities — what tools this device supports
+    let mut capabilities: Vec<&str> = vec![
+        "read_file", "write_file", "list_directory", "search_files",
+        "run_command", "open_application",
+    ];
+    #[cfg(feature = "desktop")]
+    {
+        capabilities.extend_from_slice(&[
+            "capture_screen", "mouse_click", "mouse_double_click",
+            "mouse_scroll", "mouse_drag", "keyboard_type",
+            "keyboard_press", "keyboard_hotkey",
+        ]);
+    }
+    let caps: Vec<String> = capabilities.iter().map(|s| s.to_string()).collect();
+
+    // Send capabilities as first message
+    let caps_json = serde_json::to_string(&caps)?;
+    ws_tx.send(WsMsg::Text(caps_json.into())).await
+        .map_err(|e| anyhow::anyhow!("Failed to send capabilities: {}", e))?;
+
+    println!("Waiting for confirmation...");
+
+    // Wait for connection confirmation
+    if let Some(Ok(msg)) = ws_rx.next().await {
+        if let WsMsg::Text(text) = msg {
+            println!("Server: {}", text);
+        }
+    }
+
+    println!("Connected as '{}' ({}) with {} capabilities", device_name, platform, caps.len());
+    println!("Capabilities: {}", caps.join(", "));
+    println!("Waiting for tool calls... (Ctrl+C to disconnect)");
+
+    // Create local tool context for executing tools
+    let tool_ctx = crate::agent::tools::ToolContext::with_project_paths();
+
+    // Listen for tool requests and execute them
+    while let Some(Ok(msg)) = ws_rx.next().await {
+        if let WsMsg::Text(text) = msg {
+            let text_str: &str = &text;
+            match serde_json::from_str::<crate::server::device::DeviceToolRequest>(text_str) {
+                Ok(request) => {
+                    println!("[{}] Executing: {} ({})",
+                        &request.request_id[..8.min(request.request_id.len())],
+                        request.tool_name,
+                        request.arguments);
+
+                    // Execute the tool locally
+                    let call = crate::agent::tools::ToolCall {
+                        name: request.tool_name.clone(),
+                        arguments: request.arguments,
+                    };
+
+                    let response = match crate::agent::tools::execute_tool(&call, &tool_ctx).await {
+                        Ok(result) => crate::server::device::DeviceToolResponse {
+                            request_id: request.request_id,
+                            success: result.success,
+                            message: result.message,
+                            data: result.data,
+                        },
+                        Err(e) => crate::server::device::DeviceToolResponse {
+                            request_id: request.request_id,
+                            success: false,
+                            message: format!("Error: {}", e),
+                            data: None,
+                        },
+                    };
+
+                    println!("[{}] Result: {} — {}",
+                        &response.request_id[..8.min(response.request_id.len())],
+                        if response.success { "OK" } else { "FAIL" },
+                        &response.message[..response.message.len().min(100)]);
+
+                    let response_json = serde_json::to_string(&response)?;
+                    ws_tx.send(WsMsg::Text(response_json.into())).await
+                        .map_err(|e| anyhow::anyhow!("Failed to send response: {}", e))?;
+                }
+                Err(e) => {
+                    eprintln!("Invalid message from server: {}", e);
+                }
+            }
+        }
+    }
+
+    println!("Disconnected from server.");
+    Ok(())
+}
+
+/// Read a password from stdin with echo disabled (Unix) or simple fallback
+fn rpassword_read() -> Result<String> {
+    #[cfg(unix)]
+    {
+        use std::io::BufRead;
+        // Disable echo
+        let fd = 0; // stdin
+        unsafe {
+            let mut termios: libc::termios = std::mem::zeroed();
+            libc::tcgetattr(fd, &mut termios);
+            let original = termios;
+            termios.c_lflag &= !libc::ECHO;
+            libc::tcsetattr(fd, libc::TCSANOW, &termios);
+
+            let mut line = String::new();
+            let result = std::io::stdin().lock().read_line(&mut line);
+
+            // Restore echo
+            libc::tcsetattr(fd, libc::TCSANOW, &original);
+            eprintln!(); // newline after hidden input
+
+            result?;
+            Ok(line.trim().to_string())
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        Ok(line.trim().to_string())
+    }
 }

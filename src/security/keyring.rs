@@ -189,3 +189,86 @@ pub fn has_hf_api_key() -> bool {
 
     false
 }
+
+// ============ Server Password Functions ============
+
+const SERVER_PASSWORD_USERNAME: &str = "server-password-hash";
+const SERVER_PASSWORD_FILE: &str = "server_password_hash.txt";
+
+/// Get the path for the server password hash file
+fn server_password_file_path() -> Result<PathBuf> {
+    let base = directories::ProjectDirs::from("com", "my-agent", "my-agent")
+        .context("Failed to get project directories")?;
+    let dir = base.config_dir();
+    fs::create_dir_all(dir).context("Failed to create config directory")?;
+    Ok(dir.join(SERVER_PASSWORD_FILE))
+}
+
+/// Store a hashed server password
+pub fn set_server_password(password: &str) -> Result<()> {
+    let hash = crate::server::auth::hash_password(password)?;
+
+    // Try keyring first
+    match keyring::Entry::new(SERVICE_NAME, SERVER_PASSWORD_USERNAME) {
+        Ok(entry) => {
+            if entry.set_password(&hash).is_ok() {
+                // Also save to file as backup
+                let _ = save_server_password_to_file(&hash);
+                return Ok(());
+            }
+        }
+        Err(_) => {}
+    }
+
+    // Fallback to file storage
+    save_server_password_to_file(&hash)?;
+    println!("Note: Using file-based storage for password hash (keyring unavailable)");
+    Ok(())
+}
+
+fn save_server_password_to_file(hash: &str) -> Result<()> {
+    let path = server_password_file_path()?;
+    fs::write(&path, hash).context("Failed to write server password file")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .context("Failed to set file permissions")?;
+    }
+
+    Ok(())
+}
+
+/// Get the stored server password hash
+pub fn get_server_password_hash() -> Result<String> {
+    // Try keyring first
+    if let Ok(entry) = keyring::Entry::new(SERVICE_NAME, SERVER_PASSWORD_USERNAME) {
+        if let Ok(hash) = entry.get_password() {
+            return Ok(hash);
+        }
+    }
+
+    // Fallback to file
+    let path = server_password_file_path()?;
+    let hash = fs::read_to_string(&path)
+        .context("Server password not configured. Run 'my-agent config --set-password' first.")?;
+    Ok(hash.trim().to_string())
+}
+
+/// Check if a server password has been configured
+pub fn has_server_password() -> bool {
+    if let Ok(entry) = keyring::Entry::new(SERVICE_NAME, SERVER_PASSWORD_USERNAME) {
+        if entry.get_password().is_ok() {
+            return true;
+        }
+    }
+
+    if let Ok(path) = server_password_file_path() {
+        if path.exists() {
+            return true;
+        }
+    }
+
+    false
+}

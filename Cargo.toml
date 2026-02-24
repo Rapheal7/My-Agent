@@ -61,6 +61,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "2"
 
+# System (for stdin draining in approval prompts)
+libc = "0.2"
+
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
 
@@ -110,19 +113,19 @@ hex = "0.4"
 url = "2"
 
 # Audio I/O (microphone input, speaker output) - needed for voice
-cpal = { version = "0.15", features = ["jack"] }
-rodio = "0.20"
-hound = "3.5"  # WAV file handling
-rubato = "0.15"  # Audio resampling
+cpal = { version = "0.15", features = ["jack"], optional = true }
+rodio = { version = "0.20", optional = true }
+hound = "3.5"
+rubato = { version = "0.15", optional = true }
 
 # SQLite for persistent memory
 rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Candle for local embeddings (optional, for semantic search)
-candle-core = "0.8"
-candle-transformers = "0.8"
-candle-nn = "0.8"
-tokenizers = "0.21"
+candle-core = { version = "0.8", optional = true }
+candle-transformers = { version = "0.8", optional = true }
+candle-nn = { version = "0.8", optional = true }
+tokenizers = { version = "0.21", optional = true }
 
 # HTML parsing for web browsing skill
 scraper = "0.22"
@@ -145,17 +148,23 @@ rhai = { version = "1", features = ["sync", "serde"] }
 # LRU cache for embeddings
 lru = "0.12"
 
+# ONNX Runtime for Silero VAD inference
+ort = { version = "2.0.0-rc.11", optional = true }
+
 # Desktop screenshot (cross-platform: X11/Wayland/Windows/macOS)
-screenshots = "0.8"
+screenshots = { version = "0.8", optional = true }
 
 # Desktop control (mouse/keyboard simulation)
-enigo = "0.3"
+enigo = { version = "0.3", optional = true }
 
 # Image processing
 image = "0.25"
 
 [features]
-default = []
+default = ["desktop", "voice"]
+desktop = ["dep:screenshots", "dep:enigo"]
+voice = ["dep:cpal", "dep:rodio", "dep:rubato", "dep:ort"]
+local-embeddings = ["dep:candle-core", "dep:candle-transformers", "dep:candle-nn", "dep:tokenizers"]
 syntax-highlighting = ["bat"]
 whisper = []
 coqui_tts = []

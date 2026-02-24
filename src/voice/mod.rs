@@ -29,12 +29,20 @@
 //! ```
 
 pub mod synthesis;
+#[cfg(feature = "voice")]
 pub mod coordinator;
 pub mod integration;
+#[cfg(feature = "voice")]
 pub mod audio;
 pub mod vad;
 pub mod whisper;
+#[cfg(feature = "voice")]
 pub mod tts;
+pub mod stt_local;
+pub mod tts_local;
+#[cfg(feature = "voice")]
+pub mod silero_vad;
+pub mod backchannel;
 
 use anyhow::Result;
 

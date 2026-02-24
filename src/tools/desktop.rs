@@ -8,8 +8,8 @@
 
 use anyhow::{Result, Context, bail};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "desktop")]
 use image::ImageBuffer;
-use image::RgbImage;
 
 /// Desktop tool for screen capture and control
 #[derive(Clone)]
@@ -51,81 +51,91 @@ impl DesktopTool {
     /// Capture a screenshot of the desktop
     /// Returns base64-encoded PNG image
     pub fn capture_screenshot(&self) -> Result<ScreenshotResult> {
-        use screenshots::Screen;
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        #[cfg(feature = "desktop")]
+        {
+            use screenshots::Screen;
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-        // Get all screens
-        let screens = Screen::all().context("Failed to get screen list")?;
+            // Get all screens
+            let screens = Screen::all().context("Failed to get screen list")?;
 
-        if screens.is_empty() {
-            bail!("No screens found");
+            if screens.is_empty() {
+                bail!("No screens found");
+            }
+
+            // Capture the primary screen (first one)
+            let screen = screens.into_iter().next().context("No primary screen available")?;
+
+            // Capture the screen
+            let image = screen.capture().context("Failed to capture screenshot")?;
+
+            // Convert to PNG bytes using the image crate
+            let width = image.width();
+            let height = image.height();
+            let raw_data = image.as_raw();
+
+            // Create an image buffer from the RGBA data
+            let img_buffer: ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+                ImageBuffer::from_raw(width, height, raw_data.clone())
+                    .context("Failed to create image buffer")?;
+
+            // Encode as PNG
+            let mut png_bytes: Vec<u8> = Vec::new();
+            img_buffer.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+                .context("Failed to encode screenshot as PNG")?;
+
+            let base64_data = STANDARD.encode(&png_bytes);
+
+            return Ok(ScreenshotResult {
+                width,
+                height,
+                base64_data,
+                media_type: "image/png".to_string(),
+            });
         }
-
-        // Capture the primary screen (first one)
-        let screen = screens.into_iter().next().context("No primary screen available")?;
-
-        // Capture the screen
-        let image = screen.capture().context("Failed to capture screenshot")?;
-
-        // Convert to PNG bytes using the image crate
-        let width = image.width();
-        let height = image.height();
-        let raw_data = image.as_raw();
-
-        // Create an image buffer from the RGBA data
-        let img_buffer: ImageBuffer<image::Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(width, height, raw_data.clone())
-                .context("Failed to create image buffer")?;
-
-        // Encode as PNG
-        let mut png_bytes: Vec<u8> = Vec::new();
-        img_buffer.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-            .context("Failed to encode screenshot as PNG")?;
-
-        let base64_data = STANDARD.encode(&png_bytes);
-
-        Ok(ScreenshotResult {
-            width,
-            height,
-            base64_data,
-            media_type: "image/png".to_string(),
-        })
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Capture a specific region of the screen
     pub fn capture_region(&self, x: i32, y: i32, width: u32, height: u32) -> Result<ScreenshotResult> {
-        use screenshots::Screen;
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        #[cfg(feature = "desktop")]
+        {
+            use screenshots::Screen;
+            use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-        let screens = Screen::all().context("Failed to get screen list")?;
-        let screen = screens.into_iter().next().context("No screen available")?;
+            let screens = Screen::all().context("Failed to get screen list")?;
+            let screen = screens.into_iter().next().context("No screen available")?;
 
-        // Capture the specified region
-        let image = screen.capture_area(x, y, width, height)
-            .context("Failed to capture screen region")?;
+            // Capture the specified region
+            let image = screen.capture_area(x, y, width, height)
+                .context("Failed to capture screen region")?;
 
-        let img_width = image.width();
-        let img_height = image.height();
-        let raw_data = image.as_raw();
+            let img_width = image.width();
+            let img_height = image.height();
+            let raw_data = image.as_raw();
 
-        // Create an image buffer from the RGBA data
-        let img_buffer: ImageBuffer<image::Rgba<u8>, Vec<u8>> =
-            ImageBuffer::from_raw(img_width, img_height, raw_data.clone())
-                .context("Failed to create image buffer")?;
+            // Create an image buffer from the RGBA data
+            let img_buffer: ImageBuffer<image::Rgba<u8>, Vec<u8>> =
+                ImageBuffer::from_raw(img_width, img_height, raw_data.clone())
+                    .context("Failed to create image buffer")?;
 
-        // Encode as PNG
-        let mut png_bytes: Vec<u8> = Vec::new();
-        img_buffer.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
-            .context("Failed to encode screenshot as PNG")?;
+            // Encode as PNG
+            let mut png_bytes: Vec<u8> = Vec::new();
+            img_buffer.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+                .context("Failed to encode screenshot as PNG")?;
 
-        let base64_data = STANDARD.encode(&png_bytes);
+            let base64_data = STANDARD.encode(&png_bytes);
 
-        Ok(ScreenshotResult {
-            width: img_width,
-            height: img_height,
-            base64_data,
-            media_type: "image/png".to_string(),
-        })
+            return Ok(ScreenshotResult {
+                width: img_width,
+                height: img_height,
+                base64_data,
+                media_type: "image/png".to_string(),
+            });
+        }
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 }
 
@@ -136,52 +146,20 @@ impl DesktopTool {
 impl DesktopTool {
     /// Move the mouse cursor to a position
     pub fn mouse_move(&self, x: i32, y: i32) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "desktop")]
         {
             use enigo::{Enigo, Settings, Mouse};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
             enigo.move_mouse(x, y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            use enigo::{Enigo, Settings, Mouse};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            enigo.move_mouse(x, y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Mouse};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            enigo.move_mouse(x, y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Click the mouse at a position
     pub fn mouse_click(&self, x: Option<i32>, y: Option<i32>, button: MouseButton) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            use enigo::{Enigo, Settings, Mouse, Button};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            // Move to position if specified
-            if let (Some(px), Some(py)) = (x, y) {
-                enigo.move_mouse(px, py, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-            }
-
-            // Perform the click
-            let btn = match button {
-                MouseButton::Left => Button::Left,
-                MouseButton::Right => Button::Right,
-                MouseButton::Middle => Button::Middle,
-            };
-            enigo.button(btn, enigo::Direction::Click).context("Failed to click")?;
-        }
-
-        #[cfg(target_os = "macos")]
+        #[cfg(feature = "desktop")]
         {
             use enigo::{Enigo, Settings, Mouse, Button};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
@@ -196,26 +174,10 @@ impl DesktopTool {
                 MouseButton::Middle => Button::Middle,
             };
             enigo.button(btn, enigo::Direction::Click).context("Failed to click")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Mouse, Button};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            if let (Some(px), Some(py)) = (x, y) {
-                enigo.move_mouse(px, py, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-            }
-
-            let btn = match button {
-                MouseButton::Left => Button::Left,
-                MouseButton::Right => Button::Right,
-                MouseButton::Middle => Button::Middle,
-            };
-            enigo.button(btn, enigo::Direction::Click).context("Failed to click")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Double-click the mouse
@@ -229,7 +191,7 @@ impl DesktopTool {
 
     /// Scroll the mouse wheel
     pub fn mouse_scroll(&self, direction: ScrollDirection, amount: i32) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "desktop")]
         {
             use enigo::{Enigo, Settings, Mouse};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
@@ -239,56 +201,15 @@ impl DesktopTool {
                 ScrollDirection::Down => amount,
             };
             enigo.scroll(scroll_amount, enigo::Axis::Vertical).context("Failed to scroll")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            use enigo::{Enigo, Settings, Mouse};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            let scroll_amount = match direction {
-                ScrollDirection::Up => -amount,
-                ScrollDirection::Down => amount,
-            };
-            enigo.scroll(scroll_amount, enigo::Axis::Vertical).context("Failed to scroll")?;
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Mouse};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            let scroll_amount = match direction {
-                ScrollDirection::Up => -amount,
-                ScrollDirection::Down => amount,
-            };
-            enigo.scroll(scroll_amount, enigo::Axis::Vertical).context("Failed to scroll")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Drag from one position to another
     pub fn mouse_drag(&self, from_x: i32, from_y: i32, to_x: i32, to_y: i32) -> Result<()> {
-        #[cfg(target_os = "linux")]
-        {
-            use enigo::{Enigo, Settings, Mouse, Button};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            // Move to start position
-            enigo.move_mouse(from_x, from_y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-
-            // Press and hold
-            enigo.button(Button::Left, enigo::Direction::Press).context("Failed to press button")?;
-
-            // Move to end position
-            enigo.move_mouse(to_x, to_y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-
-            // Release
-            enigo.button(Button::Left, enigo::Direction::Release).context("Failed to release button")?;
-        }
-
-        #[cfg(target_os = "macos")]
+        #[cfg(feature = "desktop")]
         {
             use enigo::{Enigo, Settings, Mouse, Button};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
@@ -297,20 +218,10 @@ impl DesktopTool {
             enigo.button(Button::Left, enigo::Direction::Press).context("Failed to press button")?;
             enigo.move_mouse(to_x, to_y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
             enigo.button(Button::Left, enigo::Direction::Release).context("Failed to release button")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Mouse, Button};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            enigo.move_mouse(from_x, from_y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-            enigo.button(Button::Left, enigo::Direction::Press).context("Failed to press button")?;
-            enigo.move_mouse(to_x, to_y, enigo::Coordinate::Abs).context("Failed to move mouse")?;
-            enigo.button(Button::Left, enigo::Direction::Release).context("Failed to release button")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 }
 
@@ -321,57 +232,29 @@ impl DesktopTool {
 impl DesktopTool {
     /// Type text using the keyboard
     pub fn keyboard_type(&self, text: &str) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "desktop")]
         {
             use enigo::{Enigo, Settings, Keyboard};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
             enigo.text(text).context("Failed to type text")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            use enigo::{Enigo, Settings, Keyboard};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            enigo.text(text).context("Failed to type text")?;
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Keyboard};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            enigo.text(text).context("Failed to type text")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Press a single key
     pub fn keyboard_press(&self, key: Key) -> Result<()> {
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "desktop")]
         {
-            use enigo::{Enigo, Settings, Keyboard, Key};
+            use enigo::{Enigo, Settings, Keyboard};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
             let enigo_key = self.key_to_enigo(key);
             enigo.key(enigo_key, enigo::Direction::Click).context("Failed to press key")?;
+            return Ok(());
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            use enigo::{Enigo, Settings, Keyboard, Key};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            let enigo_key = self.key_to_enigo(key);
-            enigo.key(enigo_key, enigo::Direction::Click).context("Failed to press key")?;
-        }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Keyboard, Key};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-            let enigo_key = self.key_to_enigo(key);
-            enigo.key(enigo_key, enigo::Direction::Click).context("Failed to press key")?;
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Press a keyboard hotkey (combination of keys)
@@ -380,27 +263,9 @@ impl DesktopTool {
             bail!("No keys specified for hotkey");
         }
 
-        #[cfg(target_os = "linux")]
+        #[cfg(feature = "desktop")]
         {
-            use enigo::{Enigo, Settings, Keyboard, Key};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            // Press all keys down
-            for key in keys {
-                let enigo_key = self.key_to_enigo(*key);
-                enigo.key(enigo_key, enigo::Direction::Press).context("Failed to press key")?;
-            }
-
-            // Release all keys in reverse order
-            for key in keys.iter().rev() {
-                let enigo_key = self.key_to_enigo(*key);
-                enigo.key(enigo_key, enigo::Direction::Release).context("Failed to release key")?;
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        {
-            use enigo::{Enigo, Settings, Keyboard, Key};
+            use enigo::{Enigo, Settings, Keyboard};
             let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
 
             for key in keys {
@@ -412,28 +277,14 @@ impl DesktopTool {
                 let enigo_key = self.key_to_enigo(*key);
                 enigo.key(enigo_key, enigo::Direction::Release).context("Failed to release key")?;
             }
+            return Ok(());
         }
-
-        #[cfg(target_os = "windows")]
-        {
-            use enigo::{Enigo, Settings, Keyboard, Key};
-            let mut enigo = Enigo::new(&Settings::default()).context("Failed to create Enigo")?;
-
-            for key in keys {
-                let enigo_key = self.key_to_enigo(*key);
-                enigo.key(enigo_key, enigo::Direction::Press).context("Failed to press key")?;
-            }
-
-            for key in keys.iter().rev() {
-                let enigo_key = self.key_to_enigo(*key);
-                enigo.key(enigo_key, enigo::Direction::Release).context("Failed to release key")?;
-            }
-        }
-
-        Ok(())
+        #[cfg(not(feature = "desktop"))]
+        bail!("Desktop features not enabled. Build with --features desktop")
     }
 
     /// Convert our Key enum to enigo Key
+    #[cfg(feature = "desktop")]
     fn key_to_enigo(&self, key: Key) -> enigo::Key {
         use enigo::Key as EnigoKey;
 

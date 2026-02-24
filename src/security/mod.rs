@@ -56,6 +56,16 @@ pub fn has_hf_api_key() -> bool {
     keyring::has_hf_api_key()
 }
 
+/// Set server password (hashes and stores securely)
+pub fn set_server_password(password: &str) -> Result<()> {
+    keyring::set_server_password(password)
+}
+
+/// Check if a server password has been configured
+pub fn has_server_password() -> bool {
+    keyring::has_server_password()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

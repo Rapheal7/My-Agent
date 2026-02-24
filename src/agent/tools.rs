@@ -9,6 +9,7 @@ use crate::tools::shell::ShellTool;
 use crate::tools::web::WebTool;
 use crate::tools::desktop::DesktopTool;
 use crate::security::ApprovalManager;
+use std::sync::Arc;
 
 /// Tool definition for LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +27,8 @@ pub struct ToolContext {
     pub web: WebTool,
     pub desktop: DesktopTool,
     pub approver: ApprovalManager,
+    /// Optional device registry for remote tool routing
+    pub device_registry: Option<Arc<crate::server::device::DeviceRegistry>>,
 }
 
 impl ToolContext {
@@ -37,6 +40,7 @@ impl ToolContext {
             web: WebTool::new().expect("Failed to create WebTool"),
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
+            device_registry: None,
         }
     }
 
@@ -93,6 +97,7 @@ impl ToolContext {
             web: WebTool::new().expect("Failed to create WebTool"),
             desktop: DesktopTool::new(),
             approver,
+            device_registry: None,
         }
     }
 
@@ -104,6 +109,7 @@ impl ToolContext {
             web: WebTool::new().expect("Failed to create WebTool"),
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
+            device_registry: None,
         }
     }
 
@@ -115,6 +121,7 @@ impl ToolContext {
             web: WebTool::new().expect("Failed to create WebTool"),
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
+            device_registry: None,
         }
     }
 
@@ -126,6 +133,7 @@ impl ToolContext {
             web,
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
+            device_registry: None,
         }
     }
 
@@ -149,6 +157,7 @@ impl ToolContext {
             web,
             desktop: DesktopTool::new(),
             approver,
+            device_registry: None,
         }
     }
 
@@ -165,6 +174,7 @@ impl ToolContext {
             web,
             desktop: DesktopTool::new(),
             approver,
+            device_registry: None,
         }
     }
 }
@@ -329,13 +339,19 @@ pub fn builtin_tools() -> Vec<Tool> {
         Tool {
             name: "execute_command".to_string(),
             description: "Execute a shell command (requires approval). \
-                Use with caution - all commands are logged and require explicit approval.".to_string(),
+                Use with caution - all commands are logged and require explicit approval. \
+                Default timeout is 120 seconds. For long-running commands like cargo build, \
+                npm install, or test suites, set a higher timeout_secs.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
                         "description": "Command to execute"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Timeout in seconds (default: 120). Use 300+ for build commands like cargo build, cargo check, npm install, etc."
                     }
                 },
                 "required": ["command"]
@@ -865,6 +881,34 @@ pub fn builtin_tools() -> Vec<Tool> {
                 "required": ["name"]
             }),
         },
+        // Remote device tools
+        Tool {
+            name: "list_devices".to_string(),
+            description: "List all connected remote devices and the currently active device. \
+                Use this to see which devices are available for tool execution.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+        Tool {
+            name: "switch_device".to_string(),
+            description: "Switch tool execution to a different device. After switching, tools like \
+                read_file, write_file, run_command, capture_screen, mouse_click, keyboard_type etc. \
+                will execute on the target device instead of the server. \
+                Use 'local' or empty string to switch back to the server.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "device": {
+                        "type": "string",
+                        "description": "Device name to switch to (e.g., 'MacBook'), or 'local' to switch back to server"
+                    }
+                },
+                "required": ["device"]
+            }),
+        },
         // Self-improvement and reflection tools
         Tool {
             name: "analyze_performance".to_string(),
@@ -1047,6 +1091,90 @@ pub fn execute_tool<'a>(call: &'a ToolCall, ctx: &'a ToolContext) -> std::pin::P
 }
 
 async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Result<ToolResult> {
+    // Handle device management tools locally (never routed)
+    match call.name.as_str() {
+        "list_devices" => {
+            if let Some(ref registry) = ctx.device_registry {
+                let devices = registry.list_devices().await;
+                let active = registry.get_active_device().await;
+                return Ok(ToolResult {
+                    success: true,
+                    message: if devices.is_empty() {
+                        "No remote devices connected. All tools execute on the local server.".to_string()
+                    } else {
+                        format!("{} device(s) connected. Active: {}",
+                            devices.len(),
+                            active.as_deref().unwrap_or("local server"))
+                    },
+                    data: Some(serde_json::json!({
+                        "devices": devices,
+                        "active": active.unwrap_or_else(|| "local".to_string()),
+                    })),
+                });
+            } else {
+                return Ok(ToolResult {
+                    success: true,
+                    message: "Device routing not available (not running in server mode).".to_string(),
+                    data: None,
+                });
+            }
+        }
+        "switch_device" => {
+            if let Some(ref registry) = ctx.device_registry {
+                let device = call.arguments["device"].as_str().unwrap_or("local");
+                let target = if device == "local" || device.is_empty() { None } else { Some(device) };
+
+                match registry.set_active_device(target).await {
+                    Ok(()) => {
+                        let label = target.unwrap_or("local server");
+                        return Ok(ToolResult {
+                            success: true,
+                            message: format!("Switched tool execution to: {}. All subsequent tool calls (file operations, shell commands, desktop control) will execute on {}.", label, label),
+                            data: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Ok(ToolResult {
+                            success: false,
+                            message: e.to_string(),
+                            data: None,
+                        });
+                    }
+                }
+            } else {
+                return Ok(ToolResult {
+                    success: false,
+                    message: "Device routing not available (not running in server mode).".to_string(),
+                    data: None,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    // Check if this tool call should be routed to a remote device
+    if let Some(ref registry) = ctx.device_registry {
+        if let Some(device_name) = registry.should_route_remote(&call.name).await {
+            match registry.execute_remote(&device_name, &call.name, call.arguments.clone()).await {
+                Ok(response) => {
+                    return Ok(ToolResult {
+                        success: response.success,
+                        message: response.message,
+                        data: response.data,
+                    });
+                }
+                Err(e) => {
+                    return Ok(ToolResult {
+                        success: false,
+                        message: format!("Remote execution on '{}' failed: {}", device_name, e),
+                        data: None,
+                    });
+                }
+            }
+        }
+    }
+
+    // Execute locally
     match call.name.as_str() {
         "read_file" => {
             let path = call.arguments["path"].as_str()
@@ -1305,23 +1433,70 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let cmd = call.arguments["command"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'command' argument"))?;
 
-            match ctx.shell.execute(cmd).await {
-                Ok(result) => Ok(ToolResult {
-                    success: result.exit_code == Some(0),
-                    message: if result.timed_out {
+            let timeout_secs = call.arguments.get("timeout_secs")
+                .and_then(|v| v.as_u64());
+
+            let exec_result = if let Some(secs) = timeout_secs {
+                ctx.shell.execute_with_timeout(cmd, secs).await
+            } else {
+                ctx.shell.execute(cmd).await
+            };
+
+            match exec_result {
+                Ok(result) => {
+                    let success = result.exit_code == Some(0);
+                    let message = if result.timed_out {
                         format!("Command timed out after {}ms", result.duration_ms)
+                    } else if success {
+                        let stdout_preview = result.stdout.trim();
+                        if stdout_preview.is_empty() {
+                            "OK".to_string()
+                        } else {
+                            // Show first 200 chars of stdout in the message
+                            let preview = if stdout_preview.len() > 200 {
+                                format!("{}...", &stdout_preview[..200])
+                            } else {
+                                stdout_preview.to_string()
+                            };
+                            preview
+                        }
                     } else {
-                        format!("Exit code: {:?}", result.exit_code)
-                    },
-                    data: Some(serde_json::json!({
-                        "command": result.command,
-                        "exit_code": result.exit_code,
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "timed_out": result.timed_out,
-                        "duration_ms": result.duration_ms,
-                    })),
-                }),
+                        // Failed: always include stderr in the message so the agent sees why
+                        let stderr = result.stderr.trim();
+                        let stdout = result.stdout.trim();
+                        let mut msg = format!("Exit code: {}", result.exit_code.unwrap_or(-1));
+                        if !stderr.is_empty() {
+                            let err_preview = if stderr.len() > 500 {
+                                format!("{}...", &stderr[..500])
+                            } else {
+                                stderr.to_string()
+                            };
+                            msg.push_str(&format!("\nstderr: {}", err_preview));
+                        }
+                        if !stdout.is_empty() && stderr.is_empty() {
+                            let out_preview = if stdout.len() > 500 {
+                                format!("{}...", &stdout[..500])
+                            } else {
+                                stdout.to_string()
+                            };
+                            msg.push_str(&format!("\nstdout: {}", out_preview));
+                        }
+                        msg
+                    };
+
+                    Ok(ToolResult {
+                        success,
+                        message,
+                        data: Some(serde_json::json!({
+                            "command": result.command,
+                            "exit_code": result.exit_code,
+                            "stdout": result.stdout,
+                            "stderr": result.stderr,
+                            "timed_out": result.timed_out,
+                            "duration_ms": result.duration_ms,
+                        })),
+                    })
+                },
                 Err(e) => Ok(ToolResult {
                     success: false,
                     message: format!("Command execution failed: {}", e),
@@ -1366,7 +1541,27 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let name = call.arguments["name"].as_str();
             let category = call.arguments["category"].as_str();
 
-            execute_create_skill(description, name, category).await
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::Custom("CreateSkill".to_string()),
+                description: format!("Create skill: {}", name.unwrap_or(description)),
+                risk_level: crate::security::approval::RiskLevel::Medium,
+                target: description.to_string(),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            match ctx.approver.request_approval(action) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_create_skill(description, name, category).await
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Skill creation was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         "list_skills" => {
@@ -1378,7 +1573,27 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
                 .ok_or_else(|| anyhow::anyhow!("Missing 'skill_id' argument"))?;
             let params = call.arguments.get("params").and_then(|p| p.as_object());
 
-            execute_use_skill(skill_id, params).await
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::Custom("UseSkill".to_string()),
+                description: format!("Execute skill: {}", skill_id),
+                risk_level: crate::security::approval::RiskLevel::Medium,
+                target: skill_id.to_string(),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            match ctx.approver.request_approval(action) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_use_skill(skill_id, params).await
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Skill execution was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         // Exploration tools
@@ -1421,7 +1636,27 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let value = call.arguments["value"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'value' argument"))?;
 
-            execute_edit_personality(field, value)
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::Custom("EditPersonality".to_string()),
+                description: format!("Edit personality field '{}': {}", field, &value[..value.len().min(50)]),
+                risk_level: crate::security::approval::RiskLevel::High,
+                target: format!("personality.{}", field),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            match ctx.approver.request_approval(action) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_edit_personality(field, value)
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Personality edit was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         "view_source" => {
@@ -1439,11 +1674,70 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let new_content = call.arguments["new_content"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'new_content' argument"))?;
 
-            execute_edit_source(file, old_content, new_content)
+            // Read current file to compute full before/after for diff preview
+            let source_dir = find_project_root();
+            let file_path = source_dir.join(file);
+            let current_content = std::fs::read_to_string(&file_path).unwrap_or_default();
+
+            if !current_content.contains(old_content) {
+                return Ok(ToolResult {
+                    success: false,
+                    message: "Old content not found in file. The content must match exactly.".to_string(),
+                    data: None,
+                });
+            }
+
+            let after_content = current_content.replace(old_content, new_content);
+
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::FileWrite,
+                description: format!("Edit source: {} ({} -> {} lines)",
+                    file,
+                    current_content.lines().count(),
+                    after_content.lines().count()),
+                risk_level: crate::security::approval::RiskLevel::High,
+                target: file_path.display().to_string(),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            // Show diff preview for approval (same as write_file)
+            match ctx.approver.request_approval_with_diff(action, &current_content, &after_content) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_edit_source(file, old_content, new_content)
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Source edit was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         "rebuild_self" => {
-            execute_rebuild_self().await
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::Custom("RebuildSelf".to_string()),
+                description: "Rebuild and reinstall agent binary".to_string(),
+                risk_level: crate::security::approval::RiskLevel::Critical,
+                target: "my-agent".to_string(),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            match ctx.approver.request_approval(action) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_rebuild_self().await
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Rebuild was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         "self_diagnose" => {
@@ -1457,7 +1751,28 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let issue_type = call.arguments["issue_type"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'issue_type' argument"))?;
             let details = call.arguments["details"].as_str().unwrap_or("");
-            execute_self_repair(issue_type, details).await
+
+            let action = crate::security::approval::Action {
+                id: uuid::Uuid::new_v4().to_string(),
+                action_type: crate::security::approval::ActionType::Custom("SelfRepair".to_string()),
+                description: format!("Self-repair: {}", issue_type),
+                risk_level: crate::security::approval::RiskLevel::High,
+                target: issue_type.to_string(),
+                details: std::collections::HashMap::new(),
+                requested_at: chrono::Utc::now(),
+            };
+
+            match ctx.approver.request_approval(action) {
+                Ok(crate::security::approval::ApprovalDecision::Approved) |
+                Ok(crate::security::approval::ApprovalDecision::ApprovedForSession) => {
+                    execute_self_repair(issue_type, details).await
+                }
+                _ => Ok(ToolResult {
+                    success: false,
+                    message: "Self-repair was not approved".to_string(),
+                    data: None,
+                })
+            }
         }
 
         // Orchestration tools - chat model can delegate to specialized agents
@@ -2151,8 +2466,11 @@ async fn execute_create_skill(
 
     // Create generator
     let api_key = crate::security::keyring::get_api_key().unwrap_or_default();
+    let config = crate::config::Config::load().unwrap_or_default();
     let generator = if !api_key.is_empty() {
-        SkillGenerator::new().with_api_key(api_key)
+        SkillGenerator::new()
+            .with_api_key(api_key)
+            .with_model(config.models.chat.clone())
     } else {
         SkillGenerator::new()
     };
@@ -2813,11 +3131,14 @@ fn execute_edit_source(file: &str, old_content: &str, new_content: &str) -> anyh
 async fn execute_rebuild_self() -> anyhow::Result<ToolResult> {
     let source_dir = find_project_root();
 
-    // Run cargo build
-    let build_output = std::process::Command::new("cargo")
+    // Run cargo build --release (async to avoid blocking the runtime)
+    let build_output = tokio::process::Command::new("cargo")
         .args(["build", "--release"])
         .current_dir(&source_dir)
-        .output();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await;
 
     match build_output {
         Ok(output) => {
@@ -2825,7 +3146,7 @@ async fn execute_rebuild_self() -> anyhow::Result<ToolResult> {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Ok(ToolResult {
                     success: false,
-                    message: format!("Build failed:\n{}", stderr),
+                    message: format!("Build failed: |{}", stderr.chars().take(2000).collect::<String>()),
                     data: None,
                 });
             }
@@ -2839,11 +3160,14 @@ async fn execute_rebuild_self() -> anyhow::Result<ToolResult> {
         }
     }
 
-    // Run cargo install
-    let install_output = std::process::Command::new("cargo")
+    // Run cargo install --path . (async)
+    let install_output = tokio::process::Command::new("cargo")
         .args(["install", "--path", "."])
         .current_dir(&source_dir)
-        .output();
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .await;
 
     match install_output {
         Ok(output) => {
@@ -2851,7 +3175,7 @@ async fn execute_rebuild_self() -> anyhow::Result<ToolResult> {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Ok(ToolResult {
                     success: false,
-                    message: format!("Install failed:\n{}", stderr),
+                    message: format!("Install failed: |{}", stderr.chars().take(2000).collect::<String>()),
                     data: None,
                 });
             }

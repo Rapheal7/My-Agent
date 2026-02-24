@@ -10,7 +10,7 @@ use tracing::{info, warn};
 use super::report::UpdateInfo;
 
 /// GitHub repository for releases
-const GITHUB_REPO: &str = "rapheal/my-agent"; // TODO: Update with actual repo
+const GITHUB_REPO: &str = "Rapheal7/My-Agent";
 const GITHUB_API_URL: &str = "https://api.github.com/repos";
 
 /// GitHub release information
