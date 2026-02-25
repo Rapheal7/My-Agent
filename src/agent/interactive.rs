@@ -65,7 +65,7 @@ impl AgentHelper {
                 "/help", "/clear", "/history", "/mode", "/model", "/tools",
                 "/agents", "/soul", "/heartbeat", "/web", "/save", "/exit", "/quit",
                 "/conversations", "/load", "/new", "/context", "/memory",
-                "/compact", "/cost", "/init", "/status", "/desktop",
+                "/compact", "/cost", "/init", "/status", "/desktop", "/git", "/skills",
                 "/mode chat", "/mode tools", "/mode orchestrate", "/mode plan",
                 "/soul edit", "/soul reset", "/soul reload",
             ],
@@ -367,6 +367,8 @@ fn print_help() {
     println!("  /heartbeat     Check soul status");
     println!("  /web <url>     Fetch web content");
     println!("  /desktop       Enable desktop automation mode (pre-approve all desktop tools)");
+    println!("  /git           Enable git mode (pre-approve all shell commands)");
+    println!("  /skills        List available and created skills");
     println!("  /save          Save conversation");
     println!("  /exit          Exit session");
     println!();
@@ -941,7 +943,7 @@ fn resolve_command(input: &str) -> String {
         "/", "/commands", "/help", "/clear", "/new", "/mode", "/model",
         "/tools", "/agents", "/soul", "/heartbeat", "/web", "/save",
         "/history", "/exit", "/conversations", "/load", "/context",
-        "/memory", "/compact", "/cost", "/init", "/status", "/desktop",
+        "/memory", "/compact", "/cost", "/init", "/status", "/desktop", "/git", "/skills",
     ];
 
     // Exact match — return as-is
@@ -990,6 +992,8 @@ async fn handle_command(cmd: &str, session: &mut Session) -> Result<bool> {
             println!("  /cost              Show session cost estimate");
             println!("  /init              Scan and inject project context");
             println!("  /desktop           Pre-approve all desktop automation tools");
+            println!("  /git               Pre-approve all git/shell commands");
+            println!("  /skills            List available skills");
             println!("  /status            Show model, mode, context usage");
             println!("  /save              Save conversation");
             println!("  /history           Show history");
@@ -1573,6 +1577,52 @@ async fn handle_command(cmd: &str, session: &mut Session) -> Result<bool> {
             print_dim("  All desktop control tools pre-approved: mouse, keyboard, applications");
             println!();
         }
+        "/skills" => {
+            let registry = crate::skills::default_registry();
+            let skills = registry.list();
+
+            if skills.is_empty() {
+                print_dim("  No skills registered. The agent can create skills on demand.");
+                println!();
+            } else {
+                print_header("Available Skills");
+                for skill in &skills {
+                    let tag = if skill.builtin { "builtin" } else { "custom" };
+                    println!("  {} [{}] - {}", skill.name, tag, skill.description);
+                }
+                println!();
+                println!("  {} total ({} builtin, {} custom)",
+                    skills.len(),
+                    skills.iter().filter(|s| s.builtin).count(),
+                    skills.iter().filter(|s| !s.builtin).count(),
+                );
+            }
+
+            // Also show saved skills on disk
+            if let Ok(saved) = registry.list_saved_skills() {
+                if !saved.is_empty() {
+                    println!();
+                    print_dim(&format!("  {} saved skill files on disk", saved.len()));
+                }
+            }
+            println!();
+        }
+        "/git" => {
+            use crate::security::approval::{ActionType, SessionApproval};
+
+            // Pre-approve all CommandExecute actions (git, shell commands)
+            session.tool_context.approver.add_session_approval(SessionApproval {
+                action_type: ActionType::CommandExecute,
+                target_pattern: "*".to_string(),
+                approved_at: chrono::Utc::now(),
+                expires_at: Some(chrono::Utc::now() + chrono::Duration::minutes(60)),
+            });
+
+            print_success("Git mode enabled (60 min session)");
+            println!();
+            print_dim("  All shell commands pre-approved: git add, commit, push, etc.");
+            println!();
+        }
         "/exit" | "/quit" | "/q" => {
             if session.persistent {
                 session.save().await?;
@@ -1587,7 +1637,7 @@ async fn handle_command(cmd: &str, session: &mut Session) -> Result<bool> {
                 "/help", "/clear", "/new", "/mode", "/model", "/tools",
                 "/agents", "/soul", "/heartbeat", "/web", "/save",
                 "/history", "/exit", "/conversations", "/load", "/context",
-                "/memory", "/compact", "/cost", "/init", "/status", "/desktop",
+                "/memory", "/compact", "/cost", "/init", "/status", "/desktop", "/git", "/skills",
             ];
             let matches: Vec<&&str> = all_commands.iter()
                 .filter(|c| c.starts_with(command))
@@ -1679,8 +1729,9 @@ async fn process_with_tools(session: &mut Session, input: &str) -> Result<String
     run_tool_calling_loop(session).await
 }
 
-/// Maximum number of tool-calling iterations to prevent infinite loops
-const MAX_TOOL_ITERATIONS: usize = 10;
+/// Default maximum number of tool-calling iterations to prevent infinite loops.
+/// Configurable via `max_tool_iterations` in config.toml.
+const DEFAULT_MAX_TOOL_ITERATIONS: usize = 15;
 
 /// Run the agentic tool-calling loop
 ///
@@ -1702,8 +1753,19 @@ async fn run_tool_calling_loop(session: &mut Session) -> Result<String> {
         })
         .collect();
 
-    // System prompt for tool-calling
-    let tool_system_prompt = r#"You are My Agent, an AI assistant with tool capabilities.
+    // System prompt for tool-calling, includes dynamic context
+    let cwd = std::env::current_dir()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
+
+    let tool_system_prompt = format!(
+r#"You are My Agent, an AI assistant with tool capabilities.
+
+## Environment
+- Working directory: {cwd}
+- Home directory: {home}
+- IMPORTANT: Always use absolute paths based on the working directory above. Never guess paths — use get_cwd or list_directory to verify if unsure.
 
 ## Your Tools
 You have access to these tools. Use them when needed to help the user:
@@ -1758,14 +1820,24 @@ Note: Memory context from past conversations is automatically injected — you d
 ## Guidelines
 1. Use tools when you need information or need to perform actions
 2. After using tools, synthesize the results into a helpful response
-3. If a tool fails, try to understand why and suggest alternatives
-4. Don't pretend to use tools - actually call them via the function API
-5. Use self-improvement tools periodically to learn and improve
+3. If a tool fails, read the error message carefully and fix the issue (wrong path, missing file, etc.) — do NOT retry the same failing call
+4. Don't pretend to use tools — actually call them via the function API
+5. NEVER return an empty response. If you hit errors, explain what happened and what you'll try next
+6. If you're unsure of a path, use get_cwd or list_directory to verify before using it
 
 ## Response Format
 - When using tools, call them and wait for results before responding
 - When done with tools, provide a clear summary or answer
-- If you need multiple tools in sequence, call them one at a time and use results to inform next steps"#;
+- Call multiple independent tools in the SAME response to save iterations
+- For bulk file operations (move, delete, copy), use execute_command with a single combined shell command (e.g. `mv file1 file2 file3 dest/` or chain with `&&`) rather than calling tools one file at a time
+- You have a limited number of tool iterations per task — work efficiently by batching operations
+
+## Error Recovery
+- If a tool call fails, READ the error output to understand why
+- Common causes: wrong path (check with get_cwd), file doesn't exist (check with list_directory), permission denied (try a different approach)
+- If stuck after 2-3 failed attempts, explain the situation to the user instead of silently failing
+- ALWAYS respond to the user's messages — never ignore them"#);
+
 
     // Get the last user message for memory context
     let last_user_msg = session.conversation.messages
@@ -1801,7 +1873,7 @@ Note: Memory context from past conversations is automatically injected — you d
     // Manage context with context manager
     let managed = session.context_manager.manage_context(
         base_messages,
-        Some(tool_system_prompt),
+        Some(tool_system_prompt.clone()),
         memory_context,
     ).await?;
 
@@ -1849,18 +1921,28 @@ Note: Memory context from past conversations is automatically injected — you d
     let mut messages = if managed_messages.first().map(|m| m.role.as_ref().and_then(|r: &serde_json::Value| r.as_str()) == Some("system")).unwrap_or(false) {
         managed_messages
     } else {
-        let mut msgs = vec![ChatMessage::system(tool_system_prompt)];
+        let mut msgs = vec![ChatMessage::system(tool_system_prompt.clone())];
         msgs.extend(managed_messages);
         msgs
     };
 
+    let max_iterations = crate::config::Config::load()
+        .map(|c| c.max_tool_iterations)
+        .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS);
+
     let mut iteration = 0;
     let mut final_response = String::new();
+    let mut empty_retries = 0;
+    const MAX_EMPTY_RETRIES: usize = 2;
+    // Track tool calls to detect repeated identical calls
+    let mut seen_tool_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut consecutive_dupes = 0;
+    const MAX_CONSECUTIVE_DUPES: usize = 2;
 
     loop {
         iteration += 1;
-        if iteration > MAX_TOOL_ITERATIONS {
-            print_dim("⚠️ Maximum tool iterations reached, stopping.");
+        if iteration > max_iterations {
+            print_dim(&format!("⚠️ Maximum tool iterations ({}) reached, stopping.", max_iterations));
             println!();
             break;
         }
@@ -1900,7 +1982,7 @@ Note: Memory context from past conversations is automatically injected — you d
             // Fallback: naive trim
             let managed = session.context_manager.manage_context(
                 messages.clone(),
-                Some(tool_system_prompt),
+                Some(tool_system_prompt.clone()),
                 None,
             ).await?;
             messages = managed.messages;
@@ -1955,17 +2037,48 @@ Note: Memory context from past conversations is automatically injected — you d
                     content.clone()
                 );
                 final_response = content;
+                break;
             } else {
-                // No content and no tool calls - this shouldn't happen but handle gracefully
-                print_dim("Model returned empty response, continuing...");
+                // No content and no tool calls — nudge the model to respond
+                empty_retries += 1;
+                if empty_retries > MAX_EMPTY_RETRIES {
+                    print_dim("Model keeps returning empty responses. Try a different model or rephrase your request.");
+                    println!();
+                    break;
+                }
+                print_dim("Model returned empty response, retrying...");
                 println!();
+                messages.push(ChatMessage::system(
+                    "Your last response was empty. You MUST respond to the user. \
+                     If you encountered errors, explain what went wrong and what you'll try next. \
+                     If you're stuck, ask the user for clarification. Never return an empty response."
+                ));
+                continue;
             }
-
-            break;
         }
 
         // We have actual tool calls - execute them
         let tool_calls = tool_calls.unwrap();
+
+        // Check for repeated identical tool calls (deduplication)
+        let call_keys: Vec<String> = tool_calls.iter()
+            .map(|tc| format!("{}:{}", tc.function.name, tc.function.arguments))
+            .collect();
+        let all_dupes = call_keys.iter().all(|k| seen_tool_calls.contains(k));
+        if all_dupes {
+            consecutive_dupes += 1;
+            if consecutive_dupes >= MAX_CONSECUTIVE_DUPES {
+                print_dim("Stopping: model is repeating the same tool calls.");
+                println!();
+                break;
+            }
+        } else {
+            consecutive_dupes = 0;
+        }
+        for key in &call_keys {
+            seen_tool_calls.insert(key.clone());
+        }
+
         let mut tool_results_messages: Vec<ChatMessage> = Vec::new();
 
         // Add the assistant message with tool calls to messages
@@ -2003,7 +2116,10 @@ Note: Memory context from past conversations is automatically injected — you d
                     if result.success {
                         println!("  \x1b[32m✓\x1b[0m {}", summary);
                     } else {
-                        println!("  \x1b[31m✗\x1b[0m {}: {}", call.name, result.message);
+                        // Show the first line of the error for compact display,
+                        // the full stderr is in result.data for the LLM
+                        let first_line = result.message.lines().take(2).collect::<Vec<_>>().join(" | ");
+                        println!("  \x1b[31m✗\x1b[0m {}: {}", call.name, first_line);
                     }
 
                     // Create tool result message (truncate large results to prevent context explosion)
@@ -2053,6 +2169,57 @@ Note: Memory context from past conversations is automatically injected — you d
 
         // Add tool results to messages for next iteration
         messages.extend(tool_results_messages);
+    }
+
+    // If the loop exited without a final text response (max iterations, dupes,
+    // empty retries), save a summary of tool work done to the conversation so
+    // the user can say "continue" and the LLM sees what was already done.
+    if final_response.is_empty() && iteration > 1 {
+        let mut summary_parts: Vec<String> = Vec::new();
+
+        // Extract tool call summaries from the messages that were built during the loop
+        // (skip the first few which are system/user messages from before the loop)
+        for msg in &messages {
+            let role = msg.role.as_ref().and_then(|r| r.as_str()).unwrap_or("");
+            if role == "assistant" {
+                if let Some(ref tcs) = msg.tool_calls {
+                    for tc in tcs {
+                        summary_parts.push(format!("- Called {}({})",
+                            tc.function.name,
+                            if tc.function.arguments.len() > 100 {
+                                format!("{}...", &tc.function.arguments[..100])
+                            } else {
+                                tc.function.arguments.clone()
+                            }
+                        ));
+                    }
+                }
+            } else if role == "tool" {
+                if let Some(ref name) = msg.name {
+                    let content = msg.content.as_ref()
+                        .and_then(|c| c.as_str())
+                        .unwrap_or("");
+                    let preview = if content.len() > 200 {
+                        format!("{}...", &content[..200])
+                    } else {
+                        content.to_string()
+                    };
+                    summary_parts.push(format!("  Result from {}: {}", name, preview));
+                }
+            }
+        }
+
+        if !summary_parts.is_empty() {
+            let summary = format!(
+                "[Tool loop stopped after {} iterations. Work done so far:]\n{}",
+                iteration - 1,
+                summary_parts.join("\n")
+            );
+            session.conversation.add_message(
+                conversation::Role::Assistant,
+                summary,
+            );
+        }
     }
 
     Ok(final_response)

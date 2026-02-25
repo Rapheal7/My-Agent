@@ -4,6 +4,7 @@
 //! use the same proven logic.
 
 use anyhow::Result;
+use std::collections::HashSet;
 use crate::agent::llm::{ChatMessage, OpenRouterClient, ToolDefinition, FunctionDefinition};
 use crate::agent::tools::{Tool, ToolContext, ToolCall, execute_tool};
 
@@ -67,6 +68,10 @@ pub async fn run_tool_loop(
     let mut iteration = 0;
     let mut total_tool_calls = 0;
     let mut final_response = String::new();
+    // Track tool calls to detect repeated identical calls
+    let mut seen_calls: HashSet<String> = HashSet::new();
+    let mut consecutive_dupes = 0;
+    const MAX_CONSECUTIVE_DUPES: usize = 2;
 
     loop {
         iteration += 1;
@@ -123,6 +128,32 @@ pub async fn run_tool_loop(
             refusal: None,
         };
         messages.push(assistant_msg);
+
+        // Check for repeated identical tool calls (deduplication)
+        let call_keys: Vec<String> = tool_calls.iter()
+            .map(|tc| format!("{}:{}", tc.function.name, tc.function.arguments))
+            .collect();
+        let all_dupes = call_keys.iter().all(|k| seen_calls.contains(k));
+        if all_dupes {
+            consecutive_dupes += 1;
+            if consecutive_dupes >= MAX_CONSECUTIVE_DUPES {
+                if let Some(ref cb) = config.on_progress {
+                    cb("Stopping: LLM is repeating the same tool calls.");
+                }
+                // Return whatever we have so far
+                return Ok(ToolLoopResult {
+                    final_response,
+                    iterations: iteration,
+                    tool_calls_made: total_tool_calls,
+                    success: false,
+                });
+            }
+        } else {
+            consecutive_dupes = 0;
+        }
+        for key in &call_keys {
+            seen_calls.insert(key.clone());
+        }
 
         // Execute each tool call and collect results
         for tc in &tool_calls {

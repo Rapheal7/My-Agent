@@ -19,8 +19,8 @@ use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-/// Default timeout for command execution (30 seconds)
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Default timeout for command execution (120 seconds)
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Maximum output size (1 MB)
 const MAX_OUTPUT_SIZE: usize = 1024 * 1024;
@@ -167,6 +167,12 @@ impl ShellTool {
         }
     }
 
+    /// Set a custom approval manager (e.g., for voice mode auto-approval)
+    pub fn set_approver(mut self, approver: ApprovalManager) -> Self {
+        self.approver = approver;
+        self
+    }
+
     /// Create with custom configuration and approver
     pub fn with_approver(config: ShellConfig, approver: ApprovalManager) -> Self {
         Self {
@@ -265,6 +271,41 @@ impl ShellTool {
         self.execute_internal(command).await
     }
 
+    /// Execute a shell command with a custom timeout (still requires approval)
+    pub async fn execute_with_timeout(&self, command: &str, timeout_secs: u64) -> Result<CommandResult> {
+        // Validate command
+        let risk_level = self.validate_command(command)?;
+
+        let timeout_dur = Duration::from_secs(timeout_secs);
+
+        // Request approval
+        let action = Action {
+            id: uuid::Uuid::new_v4().to_string(),
+            action_type: ActionType::CommandExecute,
+            description: format!("Execute: {}", command),
+            risk_level,
+            target: command.to_string(),
+            details: [
+                ("timeout".to_string(), format!("{:?}", timeout_dur)),
+                ("working_dir".to_string(), self.config.working_dir.as_ref()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| "default".to_string())),
+            ].into_iter().collect(),
+            requested_at: chrono::Utc::now(),
+        };
+
+        match self.approver.request_approval(action)? {
+            ApprovalDecision::Approved | ApprovalDecision::ApprovedForSession => {
+                // Continue with execution
+            }
+            ApprovalDecision::Denied => {
+                bail!("Command execution denied by user");
+            }
+        }
+
+        self.execute_internal_with_timeout(command, timeout_dur).await
+    }
+
     /// Execute a command without approval (for automated/internal use)
     ///
     /// # Warning
@@ -275,6 +316,11 @@ impl ShellTool {
 
     /// Execute a command without approval (for internal use after approval)
     async fn execute_internal(&self, command: &str) -> Result<CommandResult> {
+        self.execute_internal_with_timeout(command, self.config.timeout).await
+    }
+
+    /// Execute a command with a specific timeout
+    async fn execute_internal_with_timeout(&self, command: &str, cmd_timeout: Duration) -> Result<CommandResult> {
         let start = std::time::Instant::now();
 
         // Build the command
@@ -311,7 +357,7 @@ impl ShellTool {
 
         // Wait with timeout
         let child_id = child.id();
-        let result = timeout(self.config.timeout, async {
+        let result = timeout(cmd_timeout, async {
             let output = child.wait_with_output().await
                 .context("Failed to get command output")?;
             Ok::<_, anyhow::Error>(output)

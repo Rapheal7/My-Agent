@@ -92,12 +92,12 @@ impl SubagentType {
     /// Maximum ReAct iterations for this agent type
     pub fn max_iterations(&self) -> usize {
         match self {
-            SubagentType::Explore => 15,
-            SubagentType::Plan => 20,
-            SubagentType::Bash => 10,
-            SubagentType::Coder => 20,
-            SubagentType::Researcher => 12,
-            SubagentType::General => 15,
+            SubagentType::Explore => 20,
+            SubagentType::Plan => 25,
+            SubagentType::Bash => 15,
+            SubagentType::Coder => 25,
+            SubagentType::Researcher => 20,
+            SubagentType::General => 25,
         }
     }
 

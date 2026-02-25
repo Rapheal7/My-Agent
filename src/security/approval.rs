@@ -9,6 +9,24 @@ use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 
+/// Drain any leftover bytes from stdin before prompting.
+/// This prevents previous input (e.g. "yes\n" from rustyline)
+/// from being consumed by the approval prompt.
+fn drain_stdin() {
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = io::stdin().as_raw_fd();
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFL);
+            libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+            let mut buf = [0u8; 1024];
+            while libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) > 0 {}
+            libc::fcntl(fd, libc::F_SETFL, flags);
+        }
+    }
+}
+
 /// Diff line types for preview
 #[derive(Debug, Clone)]
 pub enum DiffLine {
@@ -403,23 +421,15 @@ impl ApprovalManager {
             }
         }
 
-        // Handle extra lines at the end
-        if new_lines.len() > old_lines.len() {
-            for (i, line) in new_lines[old_lines.len()..].iter().enumerate() {
-                if shown_lines >= max_display_lines {
-                    break;
-                }
-                println!("\x1b[32m+ {:4}: {}\x1b[0m", old_lines.len() + i + 1, line);
-                shown_lines += 1;
-            }
-        }
-
         println!();
         Ok(())
     }
 
     /// Prompt the user for approval with diff-specific message
     fn prompt_user_for_diff(&self, action: &Action) -> Result<ApprovalDecision> {
+        // Drain leftover stdin to avoid eating previous input
+        drain_stdin();
+
         println!("\x1b[33mApprove this edit?\x1b[0m");
         println!();
         println!("Options:");
@@ -460,6 +470,9 @@ impl ApprovalManager {
 
     /// Prompt the user for approval
     fn prompt_user(&self, action: &Action) -> Result<ApprovalDecision> {
+        // Drain leftover stdin to avoid eating previous input
+        drain_stdin();
+
         println!();
         println!("╔══════════════════════════════════════════════════════════════╗");
         println!("║  ⚠️  APPROVAL REQUIRED                                        ║");

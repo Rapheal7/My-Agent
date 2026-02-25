@@ -88,6 +88,12 @@ impl FileSystemTool {
         }
     }
 
+    /// Set a custom approval manager (e.g., for voice mode auto-approval)
+    pub fn set_approver(mut self, approver: ApprovalManager) -> Self {
+        self.approver = approver;
+        self
+    }
+
     /// Get the sandbox reference
     pub fn sandbox(&self) -> &FileSystemSandbox {
         &self.sandbox

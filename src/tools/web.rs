@@ -259,6 +259,12 @@ impl WebTool {
         })
     }
 
+    /// Set a custom approval manager (e.g., for voice mode auto-approval)
+    pub fn set_approver(mut self, approver: ApprovalManager) -> Self {
+        self.approver = approver;
+        self
+    }
+
     /// Build the HTTP client
     fn build_client(config: &WebConfig) -> Result<reqwest::Client> {
         let builder = reqwest::Client::builder()

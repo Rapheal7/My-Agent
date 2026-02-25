@@ -237,6 +237,11 @@ impl MemoryStore {
         self.sqlite.search_knowledge(&query_embedding, limit).await
     }
 
+    /// List knowledge entries (most recent first)
+    pub async fn list_knowledge(&self, limit: usize, offset: usize) -> Result<Vec<KnowledgeEntry>> {
+        self.sqlite.list_knowledge(limit, offset).await
+    }
+
     /// Get the SQLite store for direct access
     pub fn sqlite(&self) -> Arc<SqliteMemoryStore> {
         self.sqlite.clone()

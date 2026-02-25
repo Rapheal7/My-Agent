@@ -634,6 +634,45 @@ impl SqliteMemoryStore {
         Ok(count as usize)
     }
 
+    /// List knowledge entries (most recent first)
+    pub async fn list_knowledge(&self, limit: usize, offset: usize) -> Result<Vec<KnowledgeEntry>> {
+        let conn = self.conn.lock().await;
+
+        let mut stmt = conn.prepare_cached(
+            "SELECT id, content, source, importance, access_count, created_at, last_accessed
+             FROM knowledge
+             ORDER BY created_at DESC
+             LIMIT ?1 OFFSET ?2"
+        )?;
+
+        let entries = stmt.query_map(params![limit as i64, offset as i64], |row| {
+            let id: String = row.get(0)?;
+            let content: String = row.get(1)?;
+            let source: String = row.get(2)?;
+            let importance: f32 = row.get(3)?;
+            let access_count: u32 = row.get::<_, i32>(4)? as u32;
+            let created_at_str: String = row.get(5)?;
+            let last_accessed_str: String = row.get(6)?;
+
+            Ok(KnowledgeEntry {
+                id,
+                content,
+                embedding: None, // Skip embedding blobs for listing
+                source,
+                importance,
+                access_count,
+                created_at: DateTime::parse_from_rfc3339(&created_at_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+                last_accessed: DateTime::parse_from_rfc3339(&last_accessed_str)
+                    .map(|d| d.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            })
+        })?.collect::<Result<Vec<_>, _>>()?;
+
+        Ok(entries)
+    }
+
     /// Get knowledge count
     pub async fn knowledge_count(&self) -> Result<usize> {
         let conn = self.conn.lock().await;

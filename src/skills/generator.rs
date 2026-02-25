@@ -59,7 +59,7 @@ impl SkillGenerator {
     pub fn new() -> Self {
         Self {
             api_key: None,
-            model: "openrouter/pony-alpha".to_string(),
+            model: "z-ai/glm-5".to_string(),
         }
     }
 

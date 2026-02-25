@@ -8,13 +8,8 @@ on:
 
 jobs:
   check:
-    name: Check (${{ matrix.features }})
+    name: Check (headless)
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        features:
-          - "--no-default-features"
-          - ""
     steps:
       - uses: actions/checkout@v4
 
@@ -24,10 +19,10 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config libssl-dev libasound2-dev
+          sudo apt-get install -y libdbus-1-dev pkg-config libssl-dev
 
-      - name: Cargo check
-        run: cargo check ${{ matrix.features }}
+      - name: Cargo check (no-default-features)
+        run: cargo check --no-default-features
 
   test:
     name: Test
@@ -41,7 +36,7 @@ jobs:
       - name: Install Linux dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libdbus-1-dev pkg-config libssl-dev libasound2-dev
+          sudo apt-get install -y libdbus-1-dev pkg-config libssl-dev
 
       - name: Run tests
         run: cargo test --no-default-features

@@ -30,6 +30,16 @@ pub struct Config {
     /// Gateway daemon configuration
     #[serde(default)]
     pub gateway: crate::gateway::GatewayConfig,
+    /// Voice chat configuration
+    #[serde(default)]
+    pub voice: VoiceConfig,
+    /// Maximum tool-calling iterations for the interactive ReAct loop
+    #[serde(default = "default_max_tool_iterations")]
+    pub max_tool_iterations: usize,
+}
+
+fn default_max_tool_iterations() -> usize {
+    25
 }
 
 /// Model assignments for different agent roles
@@ -272,6 +282,48 @@ impl Default for AuthConfig {
     }
 }
 
+/// Voice chat configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceConfig {
+    /// STT provider: "local" for faster-whisper
+    #[serde(default = "default_stt_provider")]
+    pub stt_provider: String,
+    /// TTS server URL (Kokorox)
+    #[serde(default = "default_tts_url")]
+    pub tts_url: String,
+    /// TTS voice name
+    #[serde(default = "default_tts_voice")]
+    pub tts_voice: String,
+    /// Enable backchannel responses ("mhm", "right") during pauses
+    #[serde(default = "default_true")]
+    pub backchannel_enabled: bool,
+    /// Minimum pause duration (ms) before backchannel triggers
+    #[serde(default = "default_backchannel_pause")]
+    pub backchannel_pause_ms: u64,
+    /// Whisper model size for STT
+    #[serde(default = "default_whisper_model")]
+    pub whisper_model: String,
+}
+
+fn default_stt_provider() -> String { "local".to_string() }
+fn default_tts_url() -> String { "http://localhost:3001".to_string() }
+fn default_tts_voice() -> String { "af_heart".to_string() }
+fn default_backchannel_pause() -> u64 { 400 }
+fn default_whisper_model() -> String { "medium".to_string() }
+
+impl Default for VoiceConfig {
+    fn default() -> Self {
+        Self {
+            stt_provider: default_stt_provider(),
+            tts_url: default_tts_url(),
+            tts_voice: default_tts_voice(),
+            backchannel_enabled: true,
+            backchannel_pause_ms: default_backchannel_pause(),
+            whisper_model: default_whisper_model(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -282,6 +334,8 @@ impl Default for Config {
             auth: AuthConfig::default(),
             failover: Default::default(),
             gateway: Default::default(),
+            voice: VoiceConfig::default(),
+            max_tool_iterations: default_max_tool_iterations(),
         }
     }
 }
@@ -456,6 +510,22 @@ pub fn reset_config() -> Result<()> {
 
 /// Set model for a specific role
 pub fn set_model(role: &str, model: &str) -> Result<()> {
+    // Basic model ID format validation: should be "provider/model-name"
+    if !model.contains('/') {
+        anyhow::bail!(
+            "Invalid model ID '{}'. Expected format: provider/model-name (e.g., 'openai/gpt-4o', 'z-ai/glm-5')",
+            model
+        );
+    }
+
+    let parts: Vec<&str> = model.splitn(2, '/').collect();
+    if parts[0].is_empty() || parts[1].is_empty() {
+        anyhow::bail!(
+            "Invalid model ID '{}'. Both provider and model name are required (e.g., 'openai/gpt-4o')",
+            model
+        );
+    }
+
     let mut config = Config::load()?;
 
     if !config.models.set(role, model.to_string()) {
@@ -463,7 +533,7 @@ pub fn set_model(role: &str, model: &str) -> Result<()> {
     }
 
     config.save()?;
-    println!("✅ Model for '{}' set to: {}", role, model);
+    println!("Model for '{}' set to: {}", role, model);
     Ok(())
 }
 
