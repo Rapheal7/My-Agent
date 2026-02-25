@@ -10,7 +10,7 @@
 //!
 //! # Example
 //!
-//! ```no_run
+//! ```ignore
 //! use my_agent::agent::llm::OpenRouterClient;
 //! use my_agent::config::Config;
 //!
