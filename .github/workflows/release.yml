@@ -13,6 +13,7 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: ubuntu-latest
@@ -22,10 +23,6 @@ jobs:
           - runner: macos-latest
             target: aarch64-apple-darwin
             asset: my-agent-aarch64-apple-darwin.tar.gz
-            features: "--no-default-features"
-          - runner: macos-13
-            target: x86_64-apple-darwin
-            asset: my-agent-x86_64-apple-darwin.tar.gz
             features: "--no-default-features"
 
     steps:
@@ -76,4 +73,3 @@ jobs:
           files: |
             my-agent-x86_64-unknown-linux-gnu.tar.gz
             my-agent-aarch64-apple-darwin.tar.gz
-            my-agent-x86_64-apple-darwin.tar.gz

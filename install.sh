@@ -46,7 +46,21 @@ echo "Downloading ${ASSET_NAME}..."
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-curl -fsSL -o "${TMPDIR}/${ASSET_NAME}" "$DOWNLOAD_URL"
+if ! curl -fsSL -o "${TMPDIR}/${ASSET_NAME}" "$DOWNLOAD_URL" 2>/dev/null; then
+    # Fallback: on macOS x86_64, try the ARM64 build (runs via Rosetta 2)
+    if [ "$OS" = "Darwin" ] && [ "$ARCH_TARGET" = "x86_64" ]; then
+        echo "No x86_64 macOS build available, trying ARM64 (Rosetta 2)..."
+        ARCH_TARGET="aarch64"
+        TARGET="${ARCH_TARGET}-${OS_TARGET}"
+        ASSET_NAME="${BINARY_NAME}-${TARGET}.tar.gz"
+        DOWNLOAD_URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET_NAME}"
+        curl -fsSL -o "${TMPDIR}/${ASSET_NAME}" "$DOWNLOAD_URL"
+    else
+        echo "Error: Could not download ${ASSET_NAME}"
+        echo "URL: ${DOWNLOAD_URL}"
+        exit 1
+    fi
+fi
 
 # Extract
 echo "Extracting..."
