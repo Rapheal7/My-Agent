@@ -2,6 +2,7 @@
 
 use my_agent::orchestrator::{SmartReasoningOrchestrator, AgentSpawner, ExecutionMode, create_agent_spec};
 use my_agent::orchestrator::context::SharedContext;
+use my_agent::orchestrator::bus::AgentBus;
 use my_agent::agent::llm::OpenRouterClient;
 use std::sync::Arc;
 
@@ -40,7 +41,8 @@ async fn test_orchestrator_with_kimi() -> anyhow::Result<()> {
         println!("\n🔧 Creating Agent Spawner...");
         let client = OpenRouterClient::from_keyring()?;
         let context = Arc::new(SharedContext::new(client)?);
-        let mut spawner = AgentSpawner::new(context.clone());
+        let bus = Arc::new(AgentBus::new());
+        let mut spawner = AgentSpawner::new(context.clone(), bus);
 
         // Spawn agents according to the plan using spawn_batch
         println!("\n🚀 Spawning agents...");
@@ -78,7 +80,8 @@ async fn test_simple_agent_spawn() -> anyhow::Result<()> {
 
     let client = OpenRouterClient::from_keyring()?;
     let context = Arc::new(SharedContext::new(client)?);
-    let mut spawner = AgentSpawner::new(context.clone());
+    let bus = Arc::new(AgentBus::new());
+    let mut spawner = AgentSpawner::new(context.clone(), bus);
 
     // Create a simple agent spec (requires 3 arguments: capability, task, model)
     let spec = create_agent_spec(
