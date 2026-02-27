@@ -75,12 +75,16 @@ impl SubagentType {
                 "You are a Coder agent. Your job is to write and modify code. \
                  Read existing code first, then make targeted changes using write_file. \
                  Test your changes with execute_command when appropriate. \
-                 Keep changes minimal and focused."
+                 Keep changes minimal and focused. Write production-quality code with \
+                 proper error handling, types, and documentation."
             }
             SubagentType::Researcher => {
                 "You are a Researcher agent. Your job is to find information from the web and local files. \
                  Use fetch_url for web research and search_content/read_file for local information. \
-                 Summarize findings with sources."
+                 IMPORTANT: Your output must be a CONCISE SUMMARY (under 2000 words). \
+                 Do NOT include raw HTML, full page dumps, or unprocessed content. \
+                 Extract only the key facts, best practices, and actionable information. \
+                 Structure your summary with bullet points and cite sources by URL."
             }
             SubagentType::General => {
                 "You are a General agent with full tool access. Complete the assigned task using \
@@ -118,6 +122,18 @@ impl SubagentType {
             "code" | "coder" | "developer" | "programmer" => SubagentType::Coder,
             "research" | "researcher" | "web" => SubagentType::Researcher,
             _ => SubagentType::General,
+        }
+    }
+
+    /// Get the best model for this agent type from config
+    pub fn preferred_model(&self, config: &crate::config::Config) -> String {
+        match self {
+            SubagentType::Coder => config.models.code.clone(),
+            SubagentType::Researcher => config.models.research.clone(),
+            SubagentType::Plan => config.models.reasoning.clone(),
+            SubagentType::Explore => config.models.utility.clone(),
+            SubagentType::Bash => config.models.utility.clone(),
+            SubagentType::General => config.models.code.clone(),
         }
     }
 

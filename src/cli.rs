@@ -76,6 +76,9 @@ enum Commands {
         /// Set Hugging Face API key (for voice features)
         #[arg(long)]
         set_hf_api_key: Option<String>,
+        /// Set NVIDIA NIM API key (for NVIDIA-hosted models)
+        #[arg(long)]
+        set_nvidia_key: Option<String>,
         /// Set server password for remote access authentication
         #[arg(long)]
         set_password: bool,
@@ -174,6 +177,11 @@ enum Commands {
         #[command(subcommand)]
         command: LearningCommands,
     },
+    /// Run deterministic YAML pipelines
+    Pipeline {
+        #[command(subcommand)]
+        command: PipelineCommands,
+    },
 }
 
 #[derive(Subcommand)]
@@ -198,6 +206,21 @@ enum GatewayCommands {
     },
     /// Show gateway status
     Status,
+    /// Manage the heartbeat system
+    Heartbeat {
+        #[command(subcommand)]
+        command: HeartbeatCommands,
+    },
+}
+
+#[derive(Subcommand)]
+enum HeartbeatCommands {
+    /// Show heartbeat status
+    Status,
+    /// Manually trigger a single heartbeat tick
+    Tick,
+    /// Edit the HEARTBEAT.md checklist
+    Edit,
 }
 
 #[derive(Subcommand)]
@@ -219,6 +242,27 @@ enum LearningCommands {
     Promote,
     /// Seed bootstrap context files with defaults
     Init,
+}
+
+#[derive(Subcommand)]
+enum PipelineCommands {
+    /// Run a pipeline from a YAML file
+    Run {
+        /// Path to the YAML pipeline file
+        yaml: String,
+    },
+    /// List available pipelines
+    List,
+    /// Approve a waiting pipeline step and continue
+    Approve {
+        /// Pipeline name
+        name: String,
+    },
+    /// Show pipeline status
+    Status {
+        /// Pipeline name
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -251,6 +295,19 @@ enum HistoryCommands {
 enum SkillCommands {
     /// List installed skills
     List,
+    /// Create a new skill from a template
+    Create {
+        /// Skill name (used as filename and ID)
+        name: String,
+        /// Skill description
+        #[arg(short, long, default_value = "")]
+        description: String,
+    },
+    /// Show details of a specific skill
+    Show {
+        /// Skill ID
+        id: String,
+    },
     /// Install a skill
     Install {
         /// Skill name
@@ -258,7 +315,7 @@ enum SkillCommands {
     },
     /// Remove a skill
     Remove {
-        /// Skill name
+        /// Skill name/ID
         name: String,
     },
 }
@@ -317,6 +374,17 @@ enum MemoryCommands {
         #[arg(short, long)]
         force: bool,
     },
+    /// View daily logs
+    Logs {
+        /// Specific date to view (YYYY-MM-DD), or "today"/"yesterday"
+        date: Option<String>,
+    },
+    /// Clean up old daily logs
+    LogsCleanup {
+        /// Keep logs from the last N days
+        #[arg(short, long, default_value = "30")]
+        days: u32,
+    },
 }
 
 pub async fn run() -> Result<()> {
@@ -372,13 +440,16 @@ pub async fn run() -> Result<()> {
                 crate::agent::search_conversations(&query, limit).await?;
             }
         }
-        Some(Commands::Config { set_api_key, set_hf_api_key, set_password, show, set_model, get_model, list_models }) => {
+        Some(Commands::Config { set_api_key, set_hf_api_key, set_nvidia_key, set_password, show, set_model, get_model, list_models }) => {
             if let Some(key) = set_api_key {
                 crate::security::set_api_key(&key)?;
                 println!("OpenRouter API key stored securely in keyring.");
             } else if let Some(key) = set_hf_api_key {
                 crate::security::set_hf_api_key(&key)?;
                 println!("Hugging Face API key stored securely in keyring.");
+            } else if let Some(key) = set_nvidia_key {
+                crate::security::set_nvidia_api_key(&key)?;
+                println!("NVIDIA NIM API key stored securely in keyring.");
             } else if set_password {
                 // Prompt for password with echo disabled
                 use std::io::Write;
@@ -415,6 +486,7 @@ pub async fn run() -> Result<()> {
                 println!("Configuration options:");
                 println!("  --set-api-key <key>      Set your OpenRouter API key");
                 println!("  --set-hf-api-key <key>   Set your Hugging Face API key");
+                println!("  --set-nvidia-key <key>   Set your NVIDIA NIM API key");
                 println!("  --set-password           Set server password for remote access");
                 println!("  --show                   Display current configuration");
                 println!("  --set-model <role> <id>  Set model for a role");
@@ -454,12 +526,104 @@ pub async fn run() -> Result<()> {
                 MemoryCommands::InitEmbeddings { force } => {
                     init_embeddings(force).await?;
                 }
+                MemoryCommands::Logs { date } => {
+                    show_daily_logs(date.as_deref()).await?;
+                }
+                MemoryCommands::LogsCleanup { days } => {
+                    cleanup_daily_logs(days)?;
+                }
             }
         }
         Some(Commands::Skills { command }) => {
             match command {
                 SkillCommands::List => {
                     crate::skills::list_skills()?;
+                }
+                SkillCommands::Create { name, description } => {
+                    let desc = if description.is_empty() {
+                        format!("{} skill", name)
+                    } else {
+                        description.clone()
+                    };
+
+                    let skills_dir = dirs::data_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("my-agent")
+                        .join("skills");
+                    std::fs::create_dir_all(&skills_dir)?;
+
+                    let file_path = skills_dir.join(format!("{}.skill.md", name));
+                    if file_path.exists() {
+                        println!("Skill '{}' already exists at: {}", name, file_path.display());
+                    } else {
+                        let template = crate::skills::markdown::generate_template(&name, &desc);
+                        std::fs::write(&file_path, &template)?;
+                        println!("Created skill template: {}", file_path.display());
+                        println!("Edit the file to add your instructions, then use `my-agent skills list` to verify.");
+                    }
+                }
+                SkillCommands::Show { id } => {
+                    // Try to find in markdown skills first
+                    let md_skills = crate::skills::markdown::load_markdown_skills();
+                    if let Some(skill) = md_skills.iter().find(|s| s.id == id) {
+                        println!("Skill: {} [markdown]", skill.frontmatter.name);
+                        println!("  ID: {}", skill.id);
+                        println!("  Description: {}", skill.frontmatter.description);
+                        println!("  Version: {}", skill.frontmatter.version.as_deref().unwrap_or("1.0.0"));
+                        if let Some(ref author) = skill.frontmatter.author {
+                            println!("  Author: {}", author);
+                        }
+                        if let Some(ref cat) = skill.frontmatter.category {
+                            println!("  Category: {}", cat);
+                        }
+                        if !skill.frontmatter.tags.is_empty() {
+                            println!("  Tags: {}", skill.frontmatter.tags.join(", "));
+                        }
+                        if !skill.frontmatter.parameters.is_empty() {
+                            println!("  Parameters:");
+                            for p in &skill.frontmatter.parameters {
+                                let req = if p.required { "required" } else { "optional" };
+                                println!("    - {} ({}): {} [{}]", p.name, p.param_type, p.description, req);
+                            }
+                        }
+
+                        // Check requirements
+                        let missing = crate::skills::markdown::check_requirements(skill);
+                        if missing.is_empty() {
+                            println!("  Requirements: all met");
+                        } else {
+                            println!("  Requirements: UNMET");
+                            for m in &missing {
+                                println!("    - {}", m);
+                            }
+                        }
+
+                        println!("  File: {}", skill.file_path.display());
+                        println!("\n--- Body Preview ---");
+                        // Show first 20 lines of the body
+                        for (i, line) in skill.body.lines().enumerate() {
+                            if i >= 20 {
+                                println!("  ... ({} more lines)", skill.body.lines().count() - 20);
+                                break;
+                            }
+                            println!("  {}", line);
+                        }
+                    } else {
+                        // Check in the registry (built-in or Rhai skills)
+                        let registry = crate::skills::default_registry();
+                        if let Some(skill) = registry.get(&id) {
+                            println!("Skill: {} [{}]", skill.meta.name,
+                                if skill.meta.builtin { "built-in" } else { "rhai" });
+                            println!("  ID: {}", skill.meta.id);
+                            println!("  Description: {}", skill.meta.description);
+                            println!("  Version: {}", skill.meta.version);
+                            println!("  Category: {:?}", skill.meta.category);
+                            println!("  Permissions: {:?}", skill.meta.permissions);
+                            println!("  Tags: {}", skill.meta.tags.join(", "));
+                        } else {
+                            println!("Skill '{}' not found.", id);
+                        }
+                    }
                 }
                 SkillCommands::Install { name } => {
                     crate::skills::install_skill(&name).await?;
@@ -565,12 +729,15 @@ pub async fn run() -> Result<()> {
         Some(Commands::Gateway { command }) => {
             match command {
                 GatewayCommands::Start { port, host, no_web, messaging, no_soul } => {
+                    let gw_config = crate::config::Config::load().unwrap_or_default().gateway;
                     let config = crate::gateway::GatewayConfig {
                         port,
                         host,
                         enable_web: !no_web,
                         enable_messaging: messaging,
                         auto_start_soul: !no_soul,
+                        enable_heartbeat: gw_config.enable_heartbeat,
+                        heartbeat: gw_config.heartbeat,
                     };
                     let mut gateway = crate::gateway::Gateway::with_config(config);
                     gateway.run().await?;
@@ -586,6 +753,42 @@ pub async fn run() -> Result<()> {
                     println!("Messaging: {}", if stats.messaging_enabled { "enabled" } else { "disabled" });
                     println!("Soul: {}", if stats.soul_running { "running" } else { "stopped" });
                     println!("Port: {}", stats.port);
+                }
+                GatewayCommands::Heartbeat { command } => {
+                    match command {
+                        HeartbeatCommands::Status => {
+                            let config = crate::config::Config::load()?.gateway;
+                            println!("Heartbeat Configuration");
+                            println!("=======================");
+                            println!("Enabled: {}", config.enable_heartbeat);
+                            println!("Interval: {} minutes", config.heartbeat.interval_minutes);
+                            println!("Active window: {} - {}", config.heartbeat.active_start, config.heartbeat.active_end);
+                            println!("Max errors: {}", config.heartbeat.max_consecutive_errors);
+                        }
+                        HeartbeatCommands::Tick => {
+                            println!("Running manual heartbeat tick...");
+                            let config = crate::config::Config::load()?.gateway.heartbeat;
+                            let mut hb = crate::gateway::heartbeat::CronHeartbeat::new(config)?;
+                            let outcome = hb.tick().await;
+                            println!("Result: {}", outcome);
+                        }
+                        HeartbeatCommands::Edit => {
+                            let data_dir = crate::config::data_dir()?;
+                            let path = data_dir.join("HEARTBEAT.md");
+                            // Ensure default exists
+                            let hb_config = crate::gateway::heartbeat::CronHeartbeatConfig::default();
+                            let mut hb = crate::gateway::heartbeat::CronHeartbeat::new(hb_config)?;
+                            let _ = hb.load_checklist()?;
+                            let editor = std::env::var("EDITOR").unwrap_or_else(|_| "nano".to_string());
+                            let status = std::process::Command::new(&editor)
+                                .arg(&path)
+                                .status();
+                            match status {
+                                Ok(s) if s.success() => println!("Checklist updated."),
+                                _ => eprintln!("Failed to open editor. Edit manually: {}", path.display()),
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -642,11 +845,7 @@ pub async fn run() -> Result<()> {
                         for entry in &entries {
                             println!("  {} [{}] ({}, {}) — {}", entry.id, entry.status, entry.priority, entry.area, entry.title);
                             if !entry.description.is_empty() {
-                                let desc = if entry.description.len() > 80 {
-                                    format!("{}...", &entry.description[..77])
-                                } else {
-                                    entry.description.clone()
-                                };
+                                let desc = crate::truncate_safe(&entry.description, 77);
                                 println!("    {}", desc);
                             }
                         }
@@ -666,8 +865,99 @@ pub async fn run() -> Result<()> {
                 }
             }
         }
+
+        Some(Commands::Pipeline { command }) => {
+            match command {
+                PipelineCommands::Run { yaml } => {
+                    let path = std::path::Path::new(&yaml);
+                    if !path.exists() {
+                        // Try in pipelines directory
+                        let alt = crate::config::data_dir()?.join("pipelines").join(&yaml);
+                        if alt.exists() {
+                            run_pipeline(&alt).await?;
+                        } else {
+                            eprintln!("Pipeline file not found: {}", yaml);
+                            eprintln!("Try placing it in ~/.local/share/my-agent/pipelines/");
+                        }
+                    } else {
+                        run_pipeline(path).await?;
+                    }
+                }
+                PipelineCommands::List => {
+                    let files = crate::orchestrator::pipeline::list_pipeline_files()?;
+                    if files.is_empty() {
+                        println!("No pipelines found.");
+                        println!("Place YAML pipeline files in ~/.local/share/my-agent/pipelines/");
+                    } else {
+                        println!("Available Pipelines:");
+                        for f in &files {
+                            let name = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+                            println!("  {}", name);
+                        }
+                    }
+                }
+                PipelineCommands::Approve { name } => {
+                    let dir = crate::config::data_dir()?.join("pipelines");
+                    let yaml_path = dir.join(format!("{}.yaml", name));
+                    let state_path = dir.join(format!("{}.state.json", name));
+
+                    if !yaml_path.exists() {
+                        eprintln!("Pipeline '{}' not found", name);
+                    } else if !state_path.exists() {
+                        eprintln!("No saved state for pipeline '{}'. Run it first.", name);
+                    } else {
+                        let def_content = std::fs::read_to_string(&yaml_path)?;
+                        let definition: crate::orchestrator::pipeline::PipelineDefinition = serde_yaml::from_str(&def_content)?;
+                        let mut executor = crate::orchestrator::pipeline::PipelineExecutor::resume_from_state(&state_path, definition)?;
+                        let state = executor.approve_and_continue().await?;
+                        println!("Pipeline '{}' status: {:?}", name, state.status);
+                    }
+                }
+                PipelineCommands::Status { name } => {
+                    let state_path = crate::config::data_dir()?.join("pipelines").join(format!("{}.state.json", name));
+                    if state_path.exists() {
+                        let content = std::fs::read_to_string(&state_path)?;
+                        let state: crate::orchestrator::pipeline::PipelineState = serde_json::from_str(&content)?;
+                        println!("Pipeline: {}", state.pipeline_name);
+                        println!("Status: {:?}", state.status);
+                        println!("Step: {}/{}", state.current_step_index, state.step_results.len());
+                        println!("Started: {}", state.started_at);
+                        println!("Updated: {}", state.updated_at);
+                        for (id, result) in &state.step_results {
+                            println!("  {}: {} ({:.1}s)", id, if result.success { "OK" } else { "FAIL" }, result.duration_secs);
+                        }
+                    } else {
+                        println!("No state found for pipeline '{}'. Run it first.", name);
+                    }
+                }
+            }
+        }
     }
 
+    Ok(())
+}
+
+/// Run a pipeline from a YAML file
+async fn run_pipeline(path: &std::path::Path) -> Result<()> {
+    println!("Loading pipeline from {}...", path.display());
+    let mut executor = crate::orchestrator::pipeline::PipelineExecutor::from_yaml(path)?;
+    let def = executor.definition().clone();
+    println!("Pipeline: {} ({} steps)", def.name, def.steps.len());
+    if !def.description.is_empty() {
+        println!("  {}", def.description);
+    }
+    println!();
+
+    let state = executor.execute().await?;
+    println!();
+    println!("Pipeline '{}' finished with status: {:?}", def.name, state.status);
+    for (id, result) in &state.step_results {
+        let status = if result.success { "OK" } else { "FAIL" };
+        println!("  {} [{}] ({:.1}s)", id, status, result.duration_secs);
+        if !result.success {
+            println!("    {}", result.output);
+        }
+    }
     Ok(())
 }
 
@@ -713,7 +1003,7 @@ async fn delete_conversation(id: &str) -> Result<()> {
     match store.load_conversation(id).await? {
         Some(record) => {
             let title = record.title.as_deref().unwrap_or("Untitled");
-            println!("About to delete conversation: {} ({})", title, &id[..id.len().min(8)]);
+            println!("About to delete conversation: {} ({})", title, crate::truncate_safe(id, 8));
             println!("  Messages: {}", record.messages.len());
             println!("  Created: {}", record.created_at.format("%Y-%m-%d %H:%M:%S"));
             println!();
@@ -728,7 +1018,7 @@ async fn delete_conversation(id: &str) -> Result<()> {
             }
 
             match store.delete_conversation(id).await {
-                Ok(()) => println!("Conversation deleted: {}", &id[..id.len().min(8)]),
+                Ok(()) => println!("Conversation deleted: {}", crate::truncate_safe(id, 8)),
                 Err(e) => eprintln!("Failed to delete conversation: {}", e),
             }
         }
@@ -922,7 +1212,7 @@ async fn list_knowledge(limit: usize) -> Result<()> {
             entry.content.clone()
         };
         println!("{}. [{}] (importance: {:.1}, source: {})",
-            i + 1, &entry.id[..entry.id.len().min(8)], entry.importance, entry.source);
+            i + 1, crate::truncate_safe(&entry.id, 8), entry.importance, entry.source);
         println!("   {}", content_preview);
         println!("   Created: {}  Accessed: {} times",
             entry.created_at.format("%Y-%m-%d %H:%M"), entry.access_count);
@@ -1042,7 +1332,7 @@ async fn run_device_agent(server_url: &str, device_name: &str, token: &str) -> R
             match serde_json::from_str::<crate::server::device::DeviceToolRequest>(text_str) {
                 Ok(request) => {
                     println!("[{}] Executing: {} ({})",
-                        &request.request_id[..8.min(request.request_id.len())],
+                        crate::truncate_safe(&request.request_id, 8),
                         request.tool_name,
                         request.arguments);
 
@@ -1068,9 +1358,9 @@ async fn run_device_agent(server_url: &str, device_name: &str, token: &str) -> R
                     };
 
                     println!("[{}] Result: {} — {}",
-                        &response.request_id[..8.min(response.request_id.len())],
+                        crate::truncate_safe(&response.request_id, 8),
                         if response.success { "OK" } else { "FAIL" },
-                        &response.message[..response.message.len().min(100)]);
+                        crate::truncate_safe(&response.message, 100));
 
                     let response_json = serde_json::to_string(&response)?;
                     ws_tx.send(WsMsg::Text(response_json.into())).await
@@ -1118,4 +1408,64 @@ fn rpassword_read() -> Result<String> {
         std::io::stdin().read_line(&mut line)?;
         Ok(line.trim().to_string())
     }
+}
+
+/// Show daily logs
+async fn show_daily_logs(date: Option<&str>) -> Result<()> {
+    let mgr = crate::memory::daily_log::DailyLogManager::new()?;
+
+    match date {
+        Some("today") | None => {
+            let content = mgr.load_today();
+            if content.is_empty() {
+                println!("No log entries for today.");
+            } else {
+                println!("{}", content);
+            }
+        }
+        Some("yesterday") => {
+            let content = mgr.load_yesterday();
+            if content.is_empty() {
+                println!("No log entries for yesterday.");
+            } else {
+                println!("{}", content);
+            }
+        }
+        Some("list") => {
+            let dates = mgr.list_logs()?;
+            if dates.is_empty() {
+                println!("No daily logs found.");
+            } else {
+                println!("Daily Logs ({} files):", dates.len());
+                for date in &dates {
+                    println!("  {}", date.format("%Y-%m-%d"));
+                }
+            }
+        }
+        Some(date_str) => {
+            match chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
+                Ok(date) => {
+                    let content = mgr.load_date(date);
+                    if content.is_empty() {
+                        println!("No log entries for {}.", date_str);
+                    } else {
+                        println!("{}", content);
+                    }
+                }
+                Err(_) => {
+                    eprintln!("Invalid date format. Use YYYY-MM-DD, 'today', 'yesterday', or 'list'.");
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Clean up old daily logs
+fn cleanup_daily_logs(keep_days: u32) -> Result<()> {
+    let mgr = crate::memory::daily_log::DailyLogManager::new()?;
+    let removed = mgr.cleanup(keep_days)?;
+    println!("Removed {} old log file(s), keeping last {} days.", removed, keep_days);
+    Ok(())
 }

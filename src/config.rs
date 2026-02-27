@@ -30,16 +30,26 @@ pub struct Config {
     /// Gateway daemon configuration
     #[serde(default)]
     pub gateway: crate::gateway::GatewayConfig,
+    /// NVIDIA NIM provider configuration
+    #[serde(default)]
+    pub nvidia: NvidiaConfig,
     /// Voice chat configuration
     #[serde(default)]
     pub voice: VoiceConfig,
     /// Maximum tool-calling iterations for the interactive ReAct loop
     #[serde(default = "default_max_tool_iterations")]
     pub max_tool_iterations: usize,
+    /// Wall-clock timeout for the tool-calling loop in seconds
+    #[serde(default = "default_tool_loop_timeout_secs")]
+    pub tool_loop_timeout_secs: u64,
 }
 
 fn default_max_tool_iterations() -> usize {
-    25
+    35
+}
+
+fn default_tool_loop_timeout_secs() -> u64 {
+    900
 }
 
 /// Model assignments for different agent roles
@@ -93,7 +103,7 @@ fn default_chat_model() -> String {
 }
 
 fn default_vision_model() -> String {
-    "google/gemini-flash-1.5".to_string()
+    "bytedance-seed/seed-1.6-flash".to_string()
 }
 
 impl Default for ModelsConfig {
@@ -324,6 +334,30 @@ impl Default for VoiceConfig {
     }
 }
 
+/// NVIDIA NIM provider configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NvidiaConfig {
+    /// NVIDIA NIM API base URL
+    #[serde(default = "default_nvidia_base_url")]
+    pub base_url: String,
+    /// Model ID prefixes that should route to NVIDIA NIM (e.g., ["nvidia/", "z-ai/"])
+    #[serde(default)]
+    pub model_prefixes: Vec<String>,
+}
+
+fn default_nvidia_base_url() -> String {
+    "https://integrate.api.nvidia.com/v1".to_string()
+}
+
+impl Default for NvidiaConfig {
+    fn default() -> Self {
+        Self {
+            base_url: default_nvidia_base_url(),
+            model_prefixes: Vec::new(),
+        }
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -334,8 +368,10 @@ impl Default for Config {
             auth: AuthConfig::default(),
             failover: Default::default(),
             gateway: Default::default(),
+            nvidia: NvidiaConfig::default(),
             voice: VoiceConfig::default(),
             max_tool_iterations: default_max_tool_iterations(),
+            tool_loop_timeout_secs: default_tool_loop_timeout_secs(),
         }
     }
 }

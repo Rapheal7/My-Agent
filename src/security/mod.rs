@@ -56,6 +56,26 @@ pub fn has_hf_api_key() -> bool {
     keyring::has_hf_api_key()
 }
 
+/// Set NVIDIA NIM API key in secure keyring
+pub fn set_nvidia_api_key(key: &str) -> Result<()> {
+    keyring::set_nvidia_api_key(key)
+}
+
+/// Get NVIDIA NIM API key from secure keyring
+pub fn get_nvidia_api_key() -> Result<String> {
+    keyring::get_nvidia_api_key()
+}
+
+/// Delete NVIDIA NIM API key from keyring
+pub fn delete_nvidia_api_key() -> Result<()> {
+    keyring::delete_nvidia_api_key()
+}
+
+/// Check if NVIDIA NIM API key is set
+pub fn has_nvidia_api_key() -> bool {
+    keyring::has_nvidia_api_key()
+}
+
 /// Set server password (hashes and stores securely)
 pub fn set_server_password(password: &str) -> Result<()> {
     keyring::set_server_password(password)

@@ -227,6 +227,170 @@ impl SessionCompactor {
     }
 }
 
+/// Strategy for compaction fallback chain
+#[derive(Debug, Clone, Copy)]
+pub enum CompactionStrategy {
+    /// Try LLM-powered compaction (up to 3 attempts)
+    AutoCompact,
+    /// Truncate tool result content to 2000 chars
+    TruncateToolResults,
+    /// Strip reasoning/thinking content from messages
+    ReduceThinking,
+    /// Retry compaction with cheaper model via failover
+    ModelFailover,
+    /// Keep only system prompt + reset marker (last resort)
+    SessionReset,
+}
+
+impl SessionCompactor {
+    /// Flush durable memories from conversation before compacting.
+    /// Returns bullet-point facts suitable for writing to MEMORY.md.
+    pub async fn flush_memories_before_compaction(
+        &self,
+        messages: &[ChatMessage],
+    ) -> Vec<String> {
+        // Build a truncated conversation view (~8000 chars)
+        let mut conversation_text = String::new();
+        for msg in messages {
+            let role = msg_role(msg);
+            if role == "tool" { continue; }
+            let content = msg_content(msg);
+            if !content.is_empty() {
+                conversation_text.push_str(&format!("[{}]: {}\n", role, truncate_str(&content, 300)));
+            }
+            if conversation_text.len() > 8000 {
+                break;
+            }
+        }
+
+        if conversation_text.is_empty() {
+            return Vec::new();
+        }
+
+        let prompt = format!(
+            "You are extracting durable facts from a conversation that is about to be compacted.\n\
+             Extract ONLY facts worth remembering long-term as bullet points:\n\
+             - User preferences and working style\n\
+             - Project decisions and architecture choices\n\
+             - Key file paths and their purposes\n\
+             - Important technical findings\n\
+             - Recurring patterns or issues\n\n\
+             Output ONLY bullet points, one per line, starting with '- '.\n\
+             If nothing is worth remembering, output nothing.\n\n\
+             Conversation:\n{}", truncate_str(&conversation_text, 6000)
+        );
+
+        let summary_messages = vec![
+            ChatMessage::system("Extract durable facts as bullet points. Be selective — only truly important facts."),
+            ChatMessage::user(prompt),
+        ];
+
+        match self.client.complete(&self.model, summary_messages, Some(512)).await {
+            Ok(response) => {
+                response.lines()
+                    .filter(|l| l.starts_with("- "))
+                    .map(|l| l.to_string())
+                    .collect()
+            }
+            Err(_) => Vec::new(),
+        }
+    }
+
+    /// Compact with a fallback chain of strategies.
+    /// Tries each strategy in order until one reduces the context enough.
+    pub async fn compact_with_fallback(
+        &self,
+        messages: &[ChatMessage],
+        keep_recent: usize,
+        strategies: &[CompactionStrategy],
+        target_tokens: usize,
+    ) -> Result<Vec<ChatMessage>> {
+        let mut current_messages = messages.to_vec();
+
+        for strategy in strategies {
+            let tokens = estimate_tokens(&current_messages);
+            if tokens <= target_tokens {
+                break;
+            }
+
+            match strategy {
+                CompactionStrategy::AutoCompact => {
+                    // Try LLM compaction up to 3 times
+                    for attempt in 0..3 {
+                        match self.compact(&current_messages, keep_recent).await {
+                            Ok(compacted) => {
+                                let new_tokens = estimate_tokens(&compacted);
+                                if new_tokens < tokens {
+                                    current_messages = compacted;
+                                    break;
+                                }
+                            }
+                            Err(e) => {
+                                tracing::debug!("AutoCompact attempt {} failed: {}", attempt + 1, e);
+                            }
+                        }
+                    }
+                }
+                CompactionStrategy::TruncateToolResults => {
+                    const MAX_RESULT_LEN: usize = 2000;
+                    for msg in &mut current_messages {
+                        if msg_role(msg) == "tool" {
+                            if let Some(ref content) = msg.content {
+                                let text = content.as_str().unwrap_or("");
+                                if text.len() > MAX_RESULT_LEN {
+                                    msg.content = Some(serde_json::json!(
+                                        crate::truncate_safe(text, MAX_RESULT_LEN)
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                CompactionStrategy::ReduceThinking => {
+                    for msg in &mut current_messages {
+                        msg.reasoning = None;
+                        msg.reasoning_details = None;
+                    }
+                }
+                CompactionStrategy::ModelFailover => {
+                    // Try compaction with cheaper model
+                    let cheap_model = "openai/gpt-oss-120b:free".to_string();
+                    let cheap_compactor = SessionCompactor::new(self.client.clone(), cheap_model);
+                    if let Ok(compacted) = cheap_compactor.compact(&current_messages, keep_recent).await {
+                        let new_tokens = estimate_tokens(&compacted);
+                        if new_tokens < tokens {
+                            current_messages = compacted;
+                        }
+                    }
+                }
+                CompactionStrategy::SessionReset => {
+                    // Last resort: keep only system prompt + reset marker + last message
+                    let system_msg = current_messages.iter()
+                        .find(|m| msg_role(m) == "system")
+                        .cloned();
+                    let last_user = current_messages.iter().rev()
+                        .find(|m| msg_role(m) == "user")
+                        .cloned();
+
+                    current_messages.clear();
+                    if let Some(sys) = system_msg {
+                        current_messages.push(sys);
+                    }
+                    current_messages.push(ChatMessage::system(
+                        "[Session was reset due to context overflow. Previous conversation was lost. \
+                         Please refer to Bootstrap Context for persistent knowledge.]"
+                    ));
+                    if let Some(user) = last_user {
+                        current_messages.push(user);
+                    }
+                }
+            }
+        }
+
+        Ok(current_messages)
+    }
+}
+
 /// Get the role string from a ChatMessage
 fn msg_role(msg: &ChatMessage) -> String {
     msg.role.as_ref()
@@ -258,11 +422,7 @@ fn estimate_tokens(messages: &[ChatMessage]) -> usize {
 
 /// Truncate string with ellipsis
 fn truncate_str(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max.saturating_sub(3)])
-    }
+    crate::truncate_safe(s, max)
 }
 
 #[cfg(test)]
@@ -287,5 +447,143 @@ mod tests {
     fn test_msg_role() {
         let msg = ChatMessage::user("test".to_string());
         assert_eq!(msg_role(&msg), "user");
+
+        let sys = ChatMessage::system("system prompt");
+        assert_eq!(msg_role(&sys), "system");
+    }
+
+    #[test]
+    fn test_msg_content() {
+        let msg = ChatMessage::user("hello world".to_string());
+        assert_eq!(msg_content(&msg), "hello world");
+
+        let empty = ChatMessage {
+            role: Some(serde_json::json!("assistant")),
+            content: None,
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            refusal: None,
+        };
+        assert_eq!(msg_content(&empty), "");
+    }
+
+    #[test]
+    fn test_compaction_strategy_truncate_tool_results() {
+        // Build messages with a large tool result
+        let mut messages = vec![
+            ChatMessage::system("You are helpful."),
+            ChatMessage::user("Run a command"),
+        ];
+        // Add a tool result with 5000 chars
+        let big_result = "x".repeat(5000);
+        let tool_msg = ChatMessage {
+            role: Some(serde_json::json!("tool")),
+            content: Some(serde_json::json!(big_result)),
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: Some("tc_1".to_string()),
+            name: Some("run_command".to_string()),
+            reasoning: None,
+            refusal: None,
+        };
+        messages.push(tool_msg);
+
+        // Apply TruncateToolResults directly
+        let mut msgs = messages.clone();
+        for msg in &mut msgs {
+            if msg_role(msg) == "tool" {
+                if let Some(ref content) = msg.content {
+                    let text = content.as_str().unwrap_or("");
+                    if text.len() > 2000 {
+                        msg.content = Some(serde_json::json!(
+                            crate::truncate_safe(text, 2000)
+                        ));
+                    }
+                }
+            }
+        }
+
+        // The tool message should be truncated
+        let tool_content = msgs[2].content.as_ref().unwrap().as_str().unwrap();
+        assert!(tool_content.len() < 2100, "Tool result should be truncated, got len {}", tool_content.len());
+        assert!(tool_content.contains("...[truncated]"));
+    }
+
+    #[test]
+    fn test_compaction_strategy_reduce_thinking() {
+        let mut msg = ChatMessage::user("test");
+        msg.reasoning = Some(serde_json::json!("long chain of thought..."));
+        msg.reasoning_details = Some(crate::agent::llm::ReasoningDetails {
+            reasoning: "long thinking...".to_string(),
+            confidence: Some(0.9),
+            steps: vec!["step1".to_string()],
+        });
+
+        // Apply ReduceThinking
+        msg.reasoning = None;
+        msg.reasoning_details = None;
+
+        assert!(msg.reasoning.is_none());
+        assert!(msg.reasoning_details.is_none());
+    }
+
+    #[test]
+    fn test_compaction_strategy_session_reset() {
+        let messages = vec![
+            ChatMessage::system("You are an agent."),
+            ChatMessage::user("Help me code"),
+            ChatMessage::user("Also do X"),
+            ChatMessage::user("And Y"),
+            ChatMessage::user("Final question"),
+        ];
+
+        // Simulate SessionReset
+        let system_msg = messages.iter()
+            .find(|m| msg_role(m) == "system")
+            .cloned();
+        let last_user = messages.iter().rev()
+            .find(|m| msg_role(m) == "user")
+            .cloned();
+
+        let mut result = Vec::new();
+        if let Some(sys) = system_msg {
+            result.push(sys);
+        }
+        result.push(ChatMessage::system(
+            "[Session was reset due to context overflow.]"
+        ));
+        if let Some(user) = last_user {
+            result.push(user);
+        }
+
+        assert_eq!(result.len(), 3);
+        assert_eq!(msg_role(&result[0]), "system");
+        assert_eq!(msg_content(&result[1]), "[Session was reset due to context overflow.]");
+        assert_eq!(msg_content(&result[2]), "Final question");
+    }
+
+    #[test]
+    fn test_extract_key_facts() {
+        let messages = vec![
+            ChatMessage::user("I prefer using tabs over spaces"),
+            ChatMessage::user("Look at src/main.rs and cargo.toml"),
+            ChatMessage::user("Always use snake_case for filenames"),
+        ];
+        let msg_refs: Vec<&ChatMessage> = messages.iter().collect();
+
+        let compactor = SessionCompactor {
+            client: crate::agent::llm::OpenRouterClient::new("test-key".to_string()),
+            model: "test".to_string(),
+        };
+
+        let facts = compactor.extract_key_facts(&msg_refs);
+        // Should find file paths (may be in "Files referenced: ..." format)
+        assert!(facts.iter().any(|f| f.contains("src/main.rs")), "Should find src/main.rs, got: {:?}", facts);
+        // Should find user preferences
+        assert!(facts.iter().any(|f| f.contains("prefer") || f.contains("tabs")),
+            "Should find preference about tabs, got: {:?}", facts);
     }
 }

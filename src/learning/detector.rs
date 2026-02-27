@@ -253,11 +253,7 @@ fn classify_tool_area(tool_name: &str) -> String {
 
 /// Truncate a string to max length with ellipsis
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
-    }
+    crate::truncate_safe(s, max_len)
 }
 
 #[cfg(test)]

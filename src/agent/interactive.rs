@@ -16,7 +16,7 @@ use rustyline::Helper;
 
 use crate::agent::llm::{ChatMessage, OpenRouterClient, ToolDefinition, FunctionDefinition};
 use crate::agent::conversation;
-use crate::agent::tools::{ToolContext, builtin_tools, execute_tool, ToolCall};
+use crate::agent::tools::{Tool, ToolContext, builtin_tools, execute_tool, ToolCall};
 use crate::agent::context_manager::{ContextManager, context_config_for_model};
 use crate::config::Config as AgentConfig;
 use crate::orchestrator::SmartReasoningOrchestrator;
@@ -330,6 +330,87 @@ fn print_header(text: &str) {
     print_colored(&format!("\n{}\n", text), Color::Cyan);
 }
 
+/// Analyze a screenshot using the configured vision model.
+/// If the tool result contains screenshot data, sends the image to the vision model
+/// and returns a text description that the main (non-vision) model can understand.
+/// Returns None if the result is not an image.
+async fn analyze_screenshot_with_vision(result: &crate::agent::tools::ToolResult) -> Option<String> {
+    use crate::agent::llm::{ChatMessage as VisionMsg, OpenRouterClient};
+
+    let data = result.data.as_ref()?;
+    let base64_data = data.get("base64_data")?.as_str()?;
+    let media_type = data.get("media_type")?.as_str()?;
+    if !media_type.starts_with("image/") {
+        return None;
+    }
+    let width = data.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+    let height = data.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+
+    // Load config to get vision model
+    let config = match crate::config::Config::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Vision: failed to load config: {}", e);
+            return Some(format!("Screenshot captured: {}x{} (vision unavailable: config error)", width, height));
+        }
+    };
+    let vision_model = config.models.vision.clone();
+
+    // Create OpenRouter client
+    let client = match OpenRouterClient::from_keyring() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Vision: failed to create client: {}", e);
+            return Some(format!("Screenshot captured: {}x{} (vision unavailable: no API key)", width, height));
+        }
+    };
+
+    eprintln!("Vision: analyzing screenshot {}x{} with model {}", width, height, vision_model);
+
+    // Build multimodal message with the screenshot — keep prompt concise for speed
+    let messages = vec![
+        VisionMsg {
+            role: Some(serde_json::json!("user")),
+            content: Some(serde_json::json!([
+                {
+                    "type": "text",
+                    "text": "Briefly describe what's on screen: windows/apps visible, their content, any readable text, and interactive UI elements (buttons, links, input fields). Be concise."
+                },
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": format!("data:{};base64,{}", media_type, base64_data)
+                    }
+                }
+            ])),
+            reasoning_details: None,
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            refusal: None,
+        },
+    ];
+
+    match client.complete(&vision_model, messages, Some(512)).await {
+        Ok(description) if !description.is_empty() => {
+            eprintln!("Vision: analysis complete ({} chars)", description.len());
+            Some(format!(
+                "Screenshot captured: {}x{}\n\nVision analysis (model: {}):\n{}",
+                width, height, vision_model, description
+            ))
+        }
+        Ok(_) => {
+            eprintln!("Vision: model returned empty response");
+            Some(format!("Screenshot captured: {}x{} (vision model {} returned empty response)", width, height, vision_model))
+        }
+        Err(e) => {
+            eprintln!("Vision: analysis failed: {}", e);
+            Some(format!("Screenshot captured: {}x{} (vision analysis failed: {})", width, height, e))
+        }
+    }
+}
+
 /// Print the welcome banner
 fn print_banner(name: &str, model: &str, mode: &Mode) {
     let mode_str = match mode {
@@ -478,7 +559,14 @@ fn format_tool_call(name: &str, args: &serde_json::Value) -> String {
         _ => None,
     };
     match preview {
-        Some(p) if p.len() > 50 => format!("{} {}...", name, &p[..47]),
+        Some(p) if p.len() > 50 => {
+            // Find a char boundary at or before byte 47 to avoid panicking on multi-byte chars
+            let mut end = 47.min(p.len());
+            while end > 0 && !p.is_char_boundary(end) {
+                end -= 1;
+            }
+            format!("{} {}...", name, &p[..end])
+        }
         Some(p) => format!("{} {}", name, p),
         None => name.to_string(),
     }
@@ -899,21 +987,77 @@ fn format_table(lines: &[String]) -> String {
     result
 }
 
-/// Detect if a task needs orchestration
-fn needs_orchestration(input: &str) -> bool {
-    let lower = input.to_lowercase();
+/// Classify whether a task needs orchestration (multiple specialized agents)
+/// using a fast LLM call. Falls back to keyword heuristics if the LLM call fails.
+async fn needs_orchestration(input: &str, client: &OpenRouterClient) -> bool {
+    // Quick pre-filter: very short requests are never orchestration
+    let word_count = input.split_whitespace().count();
+    if word_count < 10 {
+        return false;
+    }
 
-    // Keywords that suggest complex multi-step tasks
-    let orchestration_keywords = [
-        "write a", "create a", "build a", "implement a", "develop a",
-        "analyze the codebase", "analyze this project",
-        "refactor", "restructure",
-        "write tests for", "add tests for",
-        "create a rest api", "build an api",
-        "multi-step", "several tasks",
+    // Use a fast LLM call to classify the task
+    let config = AgentConfig::load().unwrap_or_default();
+    let model = &config.models.utility;
+
+    let classify_prompt = format!(
+        r#"Classify this user request as either TOOLS or ORCHESTRATE.
+
+TOOLS = The task can be done by a single agent using tools sequentially (reading files, searching, writing files, running commands, etc). Most tasks fall in this category, including:
+- Finding/searching files and writing reports
+- Reading, modifying, or creating files
+- Running commands
+- Answering questions about code
+- Simple multi-step tasks that flow sequentially
+
+ORCHESTRATE = The task genuinely needs multiple specialized agents working in parallel on different subtasks. This is RARE and only for:
+- Analyzing an entire large codebase from multiple angles simultaneously
+- Building a complete application with multiple independent components
+- Tasks that explicitly ask for parallel independent work streams
+- Large-scale refactoring across many unrelated modules
+
+User request: "{}"
+
+Reply with exactly one word: TOOLS or ORCHESTRATE"#,
+        input.chars().take(500).collect::<String>()
+    );
+
+    let messages = vec![
+        ChatMessage::system("You classify tasks. Reply with exactly one word: TOOLS or ORCHESTRATE. Default to TOOLS when unsure."),
+        ChatMessage::user(&classify_prompt),
     ];
 
-    orchestration_keywords.iter().any(|k| lower.contains(k))
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.complete(model, messages, Some(10)),
+    ).await {
+        Ok(Ok(response)) => {
+            let trimmed = response.trim().to_uppercase();
+            trimmed.contains("ORCHESTRATE")
+        }
+        _ => {
+            // Fallback to keyword heuristics if LLM call fails or times out
+            needs_orchestration_fallback(input)
+        }
+    }
+}
+
+/// Keyword-based fallback for orchestration detection (used when LLM classifier is unavailable)
+fn needs_orchestration_fallback(input: &str) -> bool {
+    let lower = input.to_lowercase();
+
+    let orchestration_keywords = [
+        "analyze the codebase", "analyze this project", "analyze the entire",
+        "refactor the entire", "restructure the entire",
+        "write tests for the entire", "add tests for all",
+        "create a rest api", "build an api", "build a web app",
+        "implement a full", "develop a complete",
+        "multi-step plan", "several independent tasks",
+        "compare and contrast", "research and implement",
+    ];
+
+    let word_count = input.split_whitespace().count();
+    orchestration_keywords.iter().any(|k| lower.contains(k)) && word_count > 8
 }
 
 /// Detect if a task needs tools
@@ -1688,15 +1832,25 @@ async fn process_with_tools(session: &mut Session, input: &str) -> Result<String
     // Detect if the user wants to use a specific tool directly
     let lower = input.to_lowercase();
 
-    // Direct tool execution for common patterns (shortcut for common commands)
-    if lower.starts_with("read ") || lower.starts_with("open ") || lower.starts_with("cat ") {
+    // Direct tool execution for common patterns (shortcut for simple one-step commands).
+    // Only trigger for short, simple inputs — never for complex multi-step requests.
+    let is_simple_command = input.split_whitespace().count() <= 6
+        && !input.contains(',')
+        && !input.contains(" and ");
+
+    if is_simple_command && (lower.starts_with("read ") || lower.starts_with("open ") || lower.starts_with("cat ")) {
         let path = input.split_whitespace().nth(1).unwrap_or("");
         if !path.is_empty() {
             return execute_direct_tool("read_file", &[("path", path)], &session.tool_context).await;
         }
     }
 
-    if lower.starts_with("search for ") || lower.starts_with("search ") || lower.starts_with("find ") || lower.starts_with("grep ") {
+    // Direct search shortcut — only for simple, short search commands
+    // (e.g., "search for TODO", "grep FIXME"). Skip for complex multi-part requests
+    // like "Find all TODO comments in this project, count them, and write a report".
+    if is_simple_command
+        && (lower.starts_with("search for ") || lower.starts_with("search ") || lower.starts_with("grep "))
+    {
         let pattern = input.split(":").nth(1)
             .or_else(|| input.split("for").nth(1))
             .or_else(|| input.split_whitespace().nth(1))
@@ -1707,12 +1861,12 @@ async fn process_with_tools(session: &mut Session, input: &str) -> Result<String
         }
     }
 
-    if lower.starts_with("list ") || lower.starts_with("ls ") || lower.starts_with("dir ") {
+    if is_simple_command && (lower.starts_with("list ") || lower.starts_with("ls ") || lower.starts_with("dir ")) {
         let dir = input.split_whitespace().nth(1).unwrap_or(".");
         return execute_direct_tool("list_directory", &[("path", dir)], &session.tool_context).await;
     }
 
-    if lower.starts_with("write ") || lower.starts_with("edit ") {
+    if is_simple_command && (lower.starts_with("write ") || lower.starts_with("edit ")) {
         // Extract path and content
         let rest = input.split_whitespace().skip(1).collect::<Vec<_>>().join(" ");
         if let Some(colon_pos) = rest.find(':') {
@@ -1775,7 +1929,7 @@ You have access to these tools. Use them when needed to help the user:
 - write_file(path, content): Write to a file
 - append_file(path, content): Append to a file
 - list_directory(path): List directory contents
-- search_content(pattern, directory): Search for text in files
+- search_content(pattern, directory): Search for an exact keyword in files (like grep). The pattern must be the literal text to find: for "Find all TODO comments" use pattern="TODO", for "search for FIXME" use pattern="FIXME". Never use common words like "all" or "find" as the pattern.
 - find_files(name_pattern): Find files by name
 - glob(pattern): Find files by glob pattern
 - file_info(path): Get file metadata
@@ -1816,6 +1970,21 @@ Note: Memory context from past conversations is automatically injected — you d
 ### Orchestration
 - orchestrate_task(task, agent_type): Delegate to specialized agents
 - spawn_agents(main_task, subtasks): Spawn multiple agents
+
+### Desktop & Screen
+- capture_screen(region?): Take a screenshot — automatically analyzed by a vision model. You WILL receive a detailed text description of what's on screen. You CAN see the screen through this tool.
+- mouse_click(x, y, button?): Click at coordinates
+- mouse_double_click(x, y): Double-click
+- mouse_scroll(direction, amount?): Scroll
+- keyboard_type(text): Type text
+- keyboard_press(key): Press a key
+- keyboard_hotkey(keys): Key combination
+- open_application(name): Launch an app
+
+### Browser (use these instead of open_application for web page interaction)
+- browser_navigate(url, session_id?): Open a URL in a CDP-connected browser (auto-creates session)
+- browser_snapshot(session_id?, url?): Get accessibility tree with ref IDs (auto-creates session, can navigate)
+- browser_act(session_id, ref, action, value?): Act on element by ref
 
 ## Guidelines
 1. Use tools when you need information or need to perform actions
@@ -1926,9 +2095,9 @@ Note: Memory context from past conversations is automatically injected — you d
         msgs
     };
 
-    let max_iterations = crate::config::Config::load()
-        .map(|c| c.max_tool_iterations)
-        .unwrap_or(DEFAULT_MAX_TOOL_ITERATIONS);
+    let config = crate::config::Config::load().unwrap_or_default();
+    let max_iterations = config.max_tool_iterations;
+    let timeout_secs = config.tool_loop_timeout_secs;
 
     let mut iteration = 0;
     let mut final_response = String::new();
@@ -1938,6 +2107,9 @@ Note: Memory context from past conversations is automatically injected — you d
     let mut seen_tool_calls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut consecutive_dupes = 0;
     const MAX_CONSECUTIVE_DUPES: usize = 2;
+    let mut loop_detector = crate::agent::tool_loop::LoopDetector::new();
+    let loop_start = std::time::Instant::now();
+    let mut memory_flushed = false;
 
     loop {
         iteration += 1;
@@ -1947,35 +2119,60 @@ Note: Memory context from past conversations is automatically injected — you d
             break;
         }
 
+        // Wall-clock timeout check
+        if timeout_secs > 0 && loop_start.elapsed().as_secs() >= timeout_secs {
+            print_dim(&format!("⏱️ Tool loop timed out after {}s, stopping.", timeout_secs));
+            println!();
+            break;
+        }
+
         // Check context before each LLM call
         let current_tokens = ContextManager::estimate_message_tokens(&messages);
+
+        // Memory flush: extract durable memories before compaction threshold (once per session)
+        if !memory_flushed
+            && current_tokens > session.context_manager.config.memory_flush_threshold
+            && current_tokens <= session.context_manager.config.max_context_tokens
+        {
+            memory_flushed = true;
+            print_dim("💾 Flushing memories before compaction...");
+            println!();
+            let compactor = crate::agent::compaction::SessionCompactor::from_config(session.client.clone());
+            let memories = compactor.flush_memories_before_compaction(&messages).await;
+            if !memories.is_empty() {
+                if let Ok(bootstrap) = crate::learning::BootstrapContext::new() {
+                    let content = memories.join("\n");
+                    let _ = bootstrap.append_to_file("MEMORY.md", &content);
+                    print_dim(&format!("📝 Flushed {} memories to MEMORY.md", memories.len()));
+                    println!();
+                }
+            }
+        }
+
         if current_tokens > session.context_manager.config.max_context_tokens {
             print_dim(&format!("🔄 Compressing context ({} tokens)...", current_tokens));
             println!();
 
-            // Keep system prompt + last 6 messages, compress the middle
-            let keep_recent = 6;
-            if messages.len() > keep_recent + 2 {
-                let system_msg = messages[0].clone();
-                let middle = &messages[1..messages.len() - keep_recent];
-                let recent: Vec<_> = messages[messages.len() - keep_recent..].to_vec();
-
-                match session.recursive_manager.process_conversation(middle).await {
-                    Ok(result) => {
-                        print_dim(&format!("✨ Compressed: {} → {} tokens ({:.1}x)",
-                            result.original_tokens, result.final_tokens, result.compression_ratio));
-                        println!();
-
-                        messages = vec![system_msg];
-                        messages.push(ChatMessage::system(format!(
-                            "[Prior conversation summary]\n\n{}", result.final_summary
-                        )));
-                        messages.extend(recent);
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::warn!("Recursive compression failed: {}, falling back to trim", e);
-                    }
+            // Use fallback chain for compaction
+            let compactor = crate::agent::compaction::SessionCompactor::from_config(session.client.clone());
+            let strategies = vec![
+                crate::agent::compaction::CompactionStrategy::AutoCompact,
+                crate::agent::compaction::CompactionStrategy::TruncateToolResults,
+                crate::agent::compaction::CompactionStrategy::ReduceThinking,
+                crate::agent::compaction::CompactionStrategy::ModelFailover,
+                crate::agent::compaction::CompactionStrategy::SessionReset,
+            ];
+            let target = session.context_manager.config.max_context_tokens * 3 / 4;
+            match compactor.compact_with_fallback(&messages, 6, &strategies, target).await {
+                Ok(compacted) => {
+                    let new_tokens = ContextManager::estimate_message_tokens(&compacted);
+                    print_dim(&format!("✨ Compressed: {} → {} tokens", current_tokens, new_tokens));
+                    println!();
+                    messages = compacted;
+                    continue;
+                }
+                Err(e) => {
+                    tracing::warn!("Compaction chain failed: {}, falling back to naive trim", e);
                 }
             }
 
@@ -2007,10 +2204,24 @@ Note: Memory context from past conversations is automatically injected — you d
             }
             Err(e) => {
                 thinking.finish_and_clear();
-                // Fall back to simple chat on error
+                let err_str = format!("{}", e);
+                // Retry on rate limit errors
+                if err_str.contains("429") || err_str.to_lowercase().contains("rate") {
+                    let wait_secs = 15;
+                    print_dim(&format!("  Rate limited, retrying in {}s...", wait_secs));
+                    println!();
+                    tokio::time::sleep(Duration::from_secs(wait_secs)).await;
+                    continue;
+                }
+                // Fall back to simple chat on error — pass the original input so the model has context
                 print_dim(&format!("Tool calling failed, using simple chat: {}", e));
                 println!();
-                return process_simple(session, "").await;
+                // Recover the last user message from conversation history
+                let last_input = session.conversation.messages.iter().rev()
+                    .find(|m| matches!(m.role, conversation::Role::User))
+                    .map(|m| m.content.clone())
+                    .unwrap_or_default();
+                return process_simple(session, &last_input).await;
             }
         };
 
@@ -2080,6 +2291,7 @@ Note: Memory context from past conversations is automatically injected — you d
         }
 
         let mut tool_results_messages: Vec<ChatMessage> = Vec::new();
+        let mut loop_detected_flag = false;
 
         // Add the assistant message with tool calls to messages
         let assistant_msg = ChatMessage {
@@ -2124,20 +2336,60 @@ Note: Memory context from past conversations is automatically injected — you d
 
                     // Create tool result message (truncate large results to prevent context explosion)
                     const MAX_TOOL_RESULT_CHARS: usize = 30000;
-                    let tool_result_content = if let Some(data) = &result.data {
-                        let full = serde_json::to_string(data).unwrap_or_else(|_| result.message.clone());
-                        if full.len() > MAX_TOOL_RESULT_CHARS {
-                            format!("{}...\n[truncated: {} total chars]", &full[..MAX_TOOL_RESULT_CHARS], full.len())
-                        } else {
-                            full
-                        }
+
+                    // For screenshots, route the image through the vision model to get
+                    // a text description that the main (non-vision) model can understand.
+                    let tool_result_text = if let Some(vision_description) = analyze_screenshot_with_vision(&result).await {
+                        vision_description
                     } else {
-                        result.message.clone()
+                        let text_content = if let Some(data) = &result.data {
+                            // Strip base64_data from serialization to avoid dumping
+                            // megabytes of raw image data into the LLM context
+                            let clean_data = if data.get("base64_data").is_some() {
+                                let mut obj = data.clone();
+                                if let Some(map) = obj.as_object_mut() {
+                                    map.remove("base64_data");
+                                }
+                                obj
+                            } else {
+                                data.clone()
+                            };
+                            let full = serde_json::to_string(&clean_data).unwrap_or_else(|_| result.message.clone());
+                            if full.len() > MAX_TOOL_RESULT_CHARS {
+                                format!("{}...\n[truncated: {} total chars]", &full[..MAX_TOOL_RESULT_CHARS], full.len())
+                            } else {
+                                full
+                            }
+                        } else {
+                            result.message.clone()
+                        };
+                        text_content
                     };
+
+                    // Check for loop patterns
+                    let call_sig = format!("{}:{}", call.name, tc.function.arguments);
+                    let result_h = crate::agent::tool_loop::hash_result(&tool_result_text);
+                    if let Some(loop_desc) = loop_detector.check(&call_sig, result_h) {
+                        print_dim(&format!("🔄 Loop detected: {}. Stopping.", loop_desc));
+                        println!();
+                        let tool_result_msg = ChatMessage {
+                            role: Some(serde_json::json!("tool")),
+                            content: Some(serde_json::json!(tool_result_text)),
+                            reasoning_details: None,
+                            tool_calls: None,
+                            tool_call_id: Some(tc.id.clone()),
+                            name: Some(call.name.clone()),
+                            reasoning: None,
+                            refusal: None,
+                        };
+                        tool_results_messages.push(tool_result_msg);
+                        loop_detected_flag = true;
+                        break;
+                    }
 
                     let tool_result_msg = ChatMessage {
                         role: Some(serde_json::json!("tool")),
-                        content: Some(serde_json::json!(tool_result_content)),
+                        content: Some(serde_json::json!(tool_result_text)),
                         reasoning_details: None,
                         tool_calls: None,
                         tool_call_id: Some(tc.id.clone()),
@@ -2146,6 +2398,9 @@ Note: Memory context from past conversations is automatically injected — you d
                         refusal: None,
                     };
                     tool_results_messages.push(tool_result_msg);
+
+                    // Vision analysis (if any) is already included in tool_result_text,
+                    // so no separate image message is needed.
                 }
                 Err(e) => {
                     print!("\r\x1b[2K");
@@ -2167,8 +2422,34 @@ Note: Memory context from past conversations is automatically injected — you d
             }
         }
 
+        // If loop was detected mid-batch, add placeholder results for unprocessed tool calls
+        // so the conversation stays consistent (assistant claimed N calls, we need N results)
+        if loop_detected_flag {
+            let processed_ids: std::collections::HashSet<String> = tool_results_messages.iter()
+                .filter_map(|m| m.tool_call_id.clone())
+                .collect();
+            for tc in &tool_calls {
+                if !processed_ids.contains(&tc.id) {
+                    tool_results_messages.push(ChatMessage {
+                        role: Some(serde_json::json!("tool")),
+                        content: Some(serde_json::json!("Skipped: loop detected, tool call not executed.")),
+                        reasoning_details: None,
+                        tool_calls: None,
+                        tool_call_id: Some(tc.id.clone()),
+                        name: Some(tc.function.name.clone()),
+                        reasoning: None,
+                        refusal: None,
+                    });
+                }
+            }
+        }
+
         // Add tool results to messages for next iteration
         messages.extend(tool_results_messages);
+
+        if loop_detected_flag {
+            break;
+        }
     }
 
     // If the loop exited without a final text response (max iterations, dupes,
@@ -2186,11 +2467,7 @@ Note: Memory context from past conversations is automatically injected — you d
                     for tc in tcs {
                         summary_parts.push(format!("- Called {}({})",
                             tc.function.name,
-                            if tc.function.arguments.len() > 100 {
-                                format!("{}...", &tc.function.arguments[..100])
-                            } else {
-                                tc.function.arguments.clone()
-                            }
+                            crate::truncate_safe(&tc.function.arguments, 100)
                         ));
                     }
                 }
@@ -2199,11 +2476,7 @@ Note: Memory context from past conversations is automatically injected — you d
                     let content = msg.content.as_ref()
                         .and_then(|c| c.as_str())
                         .unwrap_or("");
-                    let preview = if content.len() > 200 {
-                        format!("{}...", &content[..200])
-                    } else {
-                        content.to_string()
-                    };
+                    let preview = crate::truncate_safe(content, 200);
                     summary_parts.push(format!("  Result from {}: {}", name, preview));
                 }
             }
@@ -2219,6 +2492,45 @@ Note: Memory context from past conversations is automatically injected — you d
                 conversation::Role::Assistant,
                 summary,
             );
+        }
+    }
+
+    // Append conversation summary to daily log (non-fatal)
+    // Log both successful responses and early exits (timeout, loop detection, etc.)
+    if let Ok(log_mgr) = crate::memory::daily_log::DailyLogManager::new() {
+        let user_preview: String = session.conversation.messages
+            .iter()
+            .rev()
+            .find(|m| matches!(m.role, conversation::Role::User))
+            .map(|m| m.content.chars().take(120).collect())
+            .unwrap_or_default();
+
+        if !user_preview.is_empty() {
+            let (resp_preview, entry_type) = if !final_response.is_empty() {
+                (
+                    final_response.chars().take(200).collect::<String>(),
+                    crate::memory::daily_log::LogEntryType::ConversationSummary,
+                )
+            } else if iteration > 1 {
+                (
+                    format!("[Tool loop stopped after {} iterations]", iteration - 1),
+                    crate::memory::daily_log::LogEntryType::Custom("tool-loop".into()),
+                )
+            } else {
+                (String::new(), crate::memory::daily_log::LogEntryType::ConversationSummary)
+            };
+
+            if !resp_preview.is_empty() {
+                let summary = format!(
+                    "**User**: {}\n**Agent**: {}",
+                    user_preview,
+                    resp_preview,
+                );
+                let _ = log_mgr.append_entry(&crate::memory::daily_log::LogEntry {
+                    content: summary,
+                    entry_type,
+                });
+            }
         }
     }
 
@@ -2307,136 +2619,316 @@ async fn execute_direct_tool(name: &str, args: &[(&str, &str)], ctx: &ToolContex
     }
 }
 
-/// Plan structure for plan mode
-struct Plan {
-    task_type: String,
-    approach: String,
-    steps: Vec<String>,
-    tools_needed: Vec<String>,
-    agents_needed: Vec<String>,
-    estimated_complexity: String,
-}
+/// Process with planning — explore the codebase, then produce a detailed implementation plan.
+/// Does NOT execute the plan; just presents it for user approval.
+async fn process_with_plan(session: &mut Session, input: &str) -> Result<Option<String>> {
+    // Resolve the actual task: if input is just "continue"/"go on"/etc., recover from conversation history
+    let actual_task = {
+        let lower = input.trim().to_lowercase();
+        let is_continuation = matches!(lower.as_str(),
+            "continue" | "go" | "go on" | "proceed" | "retry" | "try again" | "go ahead"
+        ) || lower.len() < 8;
 
-/// Create a plan for the given input
-async fn create_plan(session: &Session, input: &str) -> Result<Plan> {
-    // Use the orchestrator to analyze the task
-    let orchestrator = SmartReasoningOrchestrator::new()?;
-    let orchestration_plan = orchestrator.process_request(input).await?;
-
-    // Build a human-readable plan
-    let mut steps = Vec::new();
-
-    // Determine approach based on task type
-    let approach = match orchestration_plan.task_type {
-        crate::orchestrator::TaskType::Simple => {
-            steps.push("Analyze the request".to_string());
-            steps.push("Process and respond".to_string());
-            "Simple task processing"
-        }
-        crate::orchestrator::TaskType::Conversation => {
-            steps.push("Understand the conversation context".to_string());
-            steps.push("Generate appropriate response".to_string());
-            "Conversation handling"
-        }
-        crate::orchestrator::TaskType::Complex => {
-            steps.push("Break down the complex task".to_string());
-            steps.push("Analyze requirements".to_string());
-            steps.push("Execute sub-tasks".to_string());
-            steps.push("Synthesize results".to_string());
-            "Complex task decomposition"
-        }
-        crate::orchestrator::TaskType::MultiStep => {
-            steps.push("Identify task steps".to_string());
-            steps.push("Plan execution order".to_string());
-            steps.push("Execute each step sequentially".to_string());
-            steps.push("Combine results".to_string());
-            "Multi-step task execution"
+        if is_continuation {
+            // Search conversation history for the real task
+            let mut recovered = None;
+            for msg in session.conversation.messages.iter().rev() {
+                if msg.role == conversation::Role::User && msg.content.len() > 20 {
+                    let c = msg.content.to_lowercase();
+                    // Skip meta-commands
+                    if !c.starts_with('/') && !matches!(c.as_str(), "continue" | "go" | "go on" | "proceed" | "retry" | "try again" | "go ahead") {
+                        recovered = Some(msg.content.clone());
+                        break;
+                    }
+                }
+            }
+            if let Some(ref task) = recovered {
+                print_dim(&format!("  Resuming plan for: {}", crate::truncate_safe(task, 80)));
+                println!();
+            }
+            recovered.unwrap_or_else(|| input.to_string())
+        } else {
+            input.to_string()
         }
     };
 
-    // Add agents to steps
-    for agent in &orchestration_plan.agents {
-        steps.push(format!("Spawn {} agent: {}", agent.capability, agent.task));
-    }
+    // Phase 1: Explore the codebase using read-only tools to gather context
+    print_dim("  Planning: exploring codebase...");
+    println!();
 
-    let tools_needed = if orchestration_plan.needs_agents {
-        vec!["orchestrator".to_string()]
-    } else {
-        builtin_tools().iter()
-            .filter(|t| {
-                let name = t.name.as_str();
-                input.to_lowercase().contains("search") && name == "search_content" ||
-                input.to_lowercase().contains("find") && name == "find_files" ||
-                input.to_lowercase().contains("read") && name == "read_file" ||
-                input.to_lowercase().contains("list") && name == "glob"
-            })
-            .map(|t| t.name.clone())
-            .collect()
-    };
+    let plan_system_prompt = format!(
+        r#"You are a software architect planning an implementation task.
 
-    let agents_needed: Vec<String> = orchestration_plan.agents
-        .iter()
-        .map(|a| a.capability.clone())
+THE TASK: {task}
+
+IMPORTANT: You are in PLAN MODE. Your job is to:
+1. Use read-only tools (read_file, list_directory, search_content, find_files, glob, get_cwd, file_info) to explore the codebase and understand the existing patterns
+2. Produce a DETAILED implementation plan — specific files to change, what to add/modify, and why
+
+RULES:
+- DO NOT write or modify any files. DO NOT execute commands. Only READ and SEARCH.
+- Stay focused on the task above. Do NOT plan for unrelated features.
+- Be EFFICIENT: aim for 3-8 tool calls total, then produce your plan.
+- Do NOT re-read the same file or re-search the same pattern.
+- Once you find the relevant code, STOP exploring and write the plan.
+- Use search_content with specific patterns (function names, struct names), not broad terms like "hello" or "name".
+- When using glob or find_files, always specify the project source directory (e.g. "src/") not the root.
+
+After gathering enough context, produce your plan in this format:
+
+# Implementation Plan: <title>
+
+## Context
+<Brief summary of what you found in the codebase relevant to this task>
+
+## Changes Required
+
+### 1. <filename>
+- **Action**: Modify/Create
+- **What**: <Specific description of changes — enum variants, struct fields, function signatures>
+- **Why**: <Reasoning>
+
+### 2. <filename>
+...
+
+## Implementation Order
+1. <First step>
+2. <Second step>
+...
+
+## Risks & Considerations
+- <Any concerns or trade-offs>
+
+Be SPECIFIC — include actual struct names, function names, enum variants, and line numbers you found during exploration.
+NEVER return an empty response. Always produce a plan after exploring."#,
+        task = actual_task
+    );
+
+    // Use read-only tools for exploration
+    let read_only_tools: Vec<Tool> = builtin_tools().into_iter()
+        .filter(|t| matches!(t.name.as_str(),
+            "read_file" | "list_directory" | "search_content" | "find_files" |
+            "glob" | "get_cwd" | "file_info"
+        ))
         .collect();
 
-    let estimated_complexity = if orchestration_plan.agents.len() > 2 {
-        "high"
-    } else if !orchestration_plan.agents.is_empty() {
-        "medium"
-    } else {
-        "low"
-    };
+    // Build messages with plan-mode system prompt
+    let mut messages = vec![
+        ChatMessage::system(plan_system_prompt),
+        ChatMessage::user(actual_task.clone()),
+    ];
 
-    Ok(Plan {
-        task_type: format!("{:?}", orchestration_plan.task_type),
-        approach: approach.to_string(),
-        steps,
-        tools_needed,
-        agents_needed,
-        estimated_complexity: estimated_complexity.to_string(),
-    })
-}
+    let tools: Vec<crate::agent::llm::ToolDefinition> = read_only_tools.iter().map(|t| {
+        crate::agent::llm::ToolDefinition {
+            r#type: "function".to_string(),
+            function: crate::agent::llm::FunctionDefinition {
+                name: t.name.clone(),
+                description: t.description.clone(),
+                parameters: t.parameters.clone(),
+            },
+        }
+    }).collect();
 
-/// Display a plan for approval
-fn display_plan(plan: &Plan) {
-    print_header("Task Plan");
+    let tool_context = session.tool_context.clone();
+    let max_iterations = 15; // Enough for exploration, but capped
 
-    println!("  Task Type: {}", plan.task_type);
-    println!("  Approach: {}", plan.approach);
-    println!("  Complexity: {}", plan.estimated_complexity);
-    println!();
+    let mut iteration = 0;
+    let mut plan_text = String::new();
+    let mut seen_files: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_searches: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    println!("  Steps:");
-    for (i, step) in plan.steps.iter().enumerate() {
-        println!("    {}. {}", i + 1, step);
+    loop {
+        iteration += 1;
+        if iteration > max_iterations {
+            // Force a final response without tools
+            let nudge = ChatMessage::system(
+                "You have explored enough. Now produce your implementation plan based on what you've learned. Do NOT make any more tool calls."
+            );
+            messages.push(nudge);
+            match session.client.complete(&session.model, messages.clone(), Some(4096)).await {
+                Ok(response) if !response.is_empty() => {
+                    plan_text = response;
+                }
+                _ => {
+                    plan_text = "Failed to generate plan — model returned empty response.".to_string();
+                }
+            }
+            break;
+        }
+
+        let thinking = create_thinking_spinner();
+        let response = {
+            let mut last_err = None;
+            let mut attempt_response = None;
+            for attempt in 0..3 {
+                match session.client.complete_with_tools(
+                    &session.model,
+                    messages.clone(),
+                    tools.clone(),
+                    Some(4096),
+                ).await {
+                    Ok(r) => {
+                        attempt_response = Some(r);
+                        break;
+                    }
+                    Err(e) => {
+                        let err_str = format!("{}", e);
+                        if err_str.contains("429") || err_str.contains("rate") || err_str.contains("Rate") {
+                            thinking.finish_and_clear();
+                            let wait_secs = (attempt + 1) * 15;
+                            print_dim(&format!("  Rate limited, retrying in {}s...", wait_secs));
+                            println!();
+                            tokio::time::sleep(Duration::from_secs(wait_secs as u64)).await;
+                            // Restart spinner for next attempt
+                        } else {
+                            last_err = Some(e);
+                            break;
+                        }
+                    }
+                }
+            }
+            thinking.finish_and_clear();
+            match attempt_response {
+                Some(r) => r,
+                None => return Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Rate limited after 3 retries")).into()),
+            }
+        };
+
+        let tool_calls = response.tool_calls.clone();
+        let has_tool_calls = tool_calls.as_ref().map(|tc| !tc.is_empty()).unwrap_or(false);
+
+        if !has_tool_calls {
+            // Model produced its plan
+            plan_text = response.content
+                .as_ref()
+                .and_then(|c| c.as_str().map(|s| s.to_string()))
+                .unwrap_or_default();
+
+            if plan_text.is_empty() {
+                // Nudge it to produce a plan
+                messages.push(ChatMessage::system(
+                    "You returned an empty response. Produce your implementation plan NOW based on what you've explored. Include specific files, changes, and reasoning."
+                ));
+                continue;
+            }
+            break;
+        }
+
+        // Execute tool calls (read-only only)
+        let tool_calls = tool_calls.unwrap();
+        let assistant_msg = ChatMessage {
+            role: Some(serde_json::json!("assistant")),
+            content: response.content.clone(),
+            reasoning_details: None,
+            tool_calls: Some(tool_calls.clone()),
+            tool_call_id: None,
+            name: None,
+            reasoning: None,
+            refusal: None,
+        };
+        messages.push(assistant_msg);
+
+        for tc in &tool_calls {
+            let call = ToolCall {
+                name: tc.function.name.clone(),
+                arguments: serde_json::from_str(&tc.function.arguments).unwrap_or_default(),
+            };
+
+            // Detect duplicate tool calls — skip re-reading files or re-searching
+            let dupe_msg = if tc.function.name == "read_file" {
+                let path = call.arguments["path"].as_str()
+                    .or_else(|| call.arguments["file_path"].as_str())
+                    .unwrap_or("");
+                if seen_files.contains(path) {
+                    Some(format!("You already read this file. Use the content from your earlier read_file call."))
+                } else {
+                    if !path.is_empty() { seen_files.insert(path.to_string()); }
+                    None
+                }
+            } else if tc.function.name == "search_content" {
+                let pattern = call.arguments["pattern"].as_str().unwrap_or("");
+                let path = call.arguments["path"].as_str().unwrap_or("");
+                let key = format!("{}:{}", pattern, path);
+                if seen_searches.contains(&key) {
+                    Some(format!("You already searched for '{}'. Use the results from your earlier search.", pattern))
+                } else {
+                    if !pattern.is_empty() { seen_searches.insert(key); }
+                    None
+                }
+            } else {
+                None
+            };
+
+            let result_text = if let Some(msg) = dupe_msg {
+                let detail = if tc.function.name == "read_file" {
+                    call.arguments["path"].as_str().or_else(|| call.arguments["file_path"].as_str()).unwrap_or("?").to_string()
+                } else {
+                    call.arguments["pattern"].as_str().unwrap_or("?").to_string()
+                };
+                print_dim(&format!("  ~ {} {} (duplicate, skipped)", tc.function.name, detail));
+                println!();
+                msg
+            } else {
+                let result = execute_tool(&call, &tool_context).await;
+                match &result {
+                    Ok(r) => {
+                        let status = if r.success { "✓" } else { "✗" };
+                        print_dim(&format!("  {} {} {}", status, tc.function.name, crate::truncate_safe(&r.message, 50)));
+                        println!();
+                        if let Some(ref data) = r.data {
+                            crate::truncate_safe(&serde_json::to_string(data).unwrap_or_default(), 8000)
+                        } else {
+                            r.message.clone()
+                        }
+                    }
+                    Err(e) => {
+                        print_dim(&format!("  ✗ {}: {}", tc.function.name, e));
+                        println!();
+                        format!("Error: {}", e)
+                    }
+                }
+            };
+
+            let tool_msg = ChatMessage {
+                role: Some(serde_json::json!("tool")),
+                content: Some(serde_json::json!(result_text)),
+                reasoning_details: None,
+                tool_calls: None,
+                tool_call_id: Some(tc.id.clone()),
+                name: Some(tc.function.name.clone()),
+                reasoning: None,
+                refusal: None,
+            };
+            messages.push(tool_msg);
+        }
     }
-    println!();
 
-    if !plan.tools_needed.is_empty() {
-        println!("  Tools: {}", plan.tools_needed.join(", "));
+    if plan_text.is_empty() {
+        print_error("Failed to generate a plan. Try rephrasing your request.");
+        println!();
+        return Ok(None);
     }
-    if !plan.agents_needed.is_empty() {
-        println!("  Agents: {}", plan.agents_needed.join(", "));
-    }
+
+    // Phase 2: Display the plan
+    println!();
+    print_header("Implementation Plan");
+    println!();
+    println!("{}", plan_text);
     println!();
 
-    print_dim("  Options: 'yes' to execute | 'no' to cancel | 'modify <feedback>' to revise");
-    println!();
-}
+    // Add to conversation (use actual_task, not raw input which might be "continue")
+    session.conversation.add_message(
+        conversation::Role::User,
+        actual_task.clone(),
+    );
+    session.conversation.add_message(
+        conversation::Role::Assistant,
+        plan_text.clone(),
+    );
 
-/// Process with planning (shows plan first, then executes on approval)
-async fn process_with_plan(session: &mut Session, input: &str) -> Result<Option<String>> {
-    // Create the plan
-    let spinner = create_thinking_spinner();
-    let plan = create_plan(session, input).await?;
-    spinner.finish_and_clear();
-
-    // Display the plan
-    display_plan(&plan);
-
-    // Ask for approval
+    // Phase 3: Ask for approval
     print_colored("❯ ", Color::Yellow);
-    print_colored("Approve plan? ", Color::Yellow);
+    print_colored("Execute this plan? [yes/no/modify]: ", Color::Yellow);
     let _ = io::stdout().flush();
 
     let mut response = String::new();
@@ -2448,44 +2940,39 @@ async fn process_with_plan(session: &mut Session, input: &str) -> Result<Option<
             println!();
             print_success("✓ Executing plan...");
             println!();
-
-            // Execute based on plan complexity
-            if !plan.agents_needed.is_empty() {
-                process_with_orchestrator(session, input).await.map(Some)
-            } else if !plan.tools_needed.is_empty() {
-                process_with_tools(session, input).await.map(Some)
-            } else {
-                process_simple(session, input).await.map(Some)
-            }
+            // Execute using tools mode with the actual task + plan context
+            let execute_prompt = format!(
+                "{}\n\nFollow this plan:\n{}",
+                actual_task, plan_text
+            );
+            process_with_tools(session, &execute_prompt).await.map(Some)
         }
         "no" | "n" | "cancel" | "stop" => {
             println!();
-            print_dim("Plan cancelled.");
+            print_dim("Plan cancelled. Switching back to tools mode.");
             println!();
-            Ok(None)
-        }
-        resp if resp.starts_with("modify") || resp.starts_with("change") => {
-            println!();
-            print_dim("Plan modification not yet implemented. Please describe your modified request.");
-            println!();
-            Ok(None)
+            session.mode = Mode::Tools;
+            Ok(Some(plan_text))
         }
         _ => {
             println!();
-            print_dim("Unknown response. Plan cancelled.");
+            print_dim("Plan saved but not executed. Switching back to tools mode.");
             println!();
-            Ok(None)
+            session.mode = Mode::Tools;
+            Ok(Some(plan_text))
         }
     }
 }
 
 /// Process with orchestrator (spawn agents)
 async fn process_with_orchestrator(session: &mut Session, input: &str) -> Result<String> {
-    // Create orchestrator
+    // Create orchestrator — show a spinner while planning
+    let planning_spinner = create_thinking_spinner();
     let orchestrator = SmartReasoningOrchestrator::new()?;
 
     // Get plan
     let plan = orchestrator.process_request(input).await?;
+    planning_spinner.finish_and_clear();
 
     let mut results = Vec::new();
 
@@ -2535,18 +3022,47 @@ async fn process_with_orchestrator(session: &mut Session, input: &str) -> Result
 
     spawner.shutdown_all().await?;
 
+    // Summarize large agent results before synthesis to stay within context limits.
+    // Any result over ~4000 chars gets summarized by the LLM first.
+    const MAX_RESULT_CHARS: usize = 4000;
+    let mut summarized_results = Vec::new();
+    for result in &results {
+        if result.len() > MAX_RESULT_CHARS {
+            let summary_msgs = vec![
+                ChatMessage::system("Summarize the following agent output into key findings. \
+                    Be concise (under 500 words). Keep all important facts, code snippets, \
+                    recommendations, and specific data. Remove boilerplate and filler."),
+                ChatMessage::user(result.clone()),
+            ];
+            match session.client.complete(&session.model, summary_msgs, Some(1024)).await {
+                Ok(s) => summarized_results.push(s),
+                Err(_) => {
+                    // Fallback: truncate
+                    let mut end = MAX_RESULT_CHARS;
+                    while end > 0 && !result.is_char_boundary(end) { end -= 1; }
+                    summarized_results.push(format!("{}...[truncated]", &result[..end]));
+                }
+            }
+        } else {
+            summarized_results.push(result.clone());
+        }
+    }
+
     // Combine all results and synthesize with LLM
-    let combined = results.join("\n\n---\n\n");
+    let combined = summarized_results.join("\n\n---\n\n");
     let summary_prompt = format!(
         "The user asked: {}\n\nHere are the results from specialized agents:\n\n{}\n\n\
-         Synthesize these results into a clear, actionable response.",
+         Synthesize these results into a clear, actionable response. \
+         If code was written, include the file path and key highlights.",
         input, combined
     );
 
     session.conversation.add_message(conversation::Role::User, input.to_string());
 
     let messages: Vec<ChatMessage> = vec![
-        ChatMessage::system("You are synthesizing results from specialized agents. Be concise and actionable."),
+        ChatMessage::system("You are synthesizing results from specialized agents. \
+            Be concise and actionable. Present results in a well-structured format. \
+            If an agent wrote code to a file, mention the file path and key features."),
         ChatMessage::user(summary_prompt),
     ];
 
@@ -2658,6 +3174,9 @@ async fn process_simple(session: &mut Session, input: &str) -> Result<String> {
     ).await?;
     println!();
     println!();
+
+    // Add to conversation (consistent with process_with_tools and process_with_orchestrator)
+    session.conversation.add_message(conversation::Role::Assistant, response.clone());
 
     Ok(response)
 }
@@ -2808,9 +3327,69 @@ pub async fn run_interactive(persistent: bool, resume: bool) -> Result<()> {
                     break;
                 }
 
+                // Detect natural language mode switch requests
+                {
+                    let lower = input.to_lowercase();
+                    let mode_switch = if lower.contains("switch to plan") || lower.contains("use plan mode") || lower.contains("enter plan mode") || lower.starts_with("in plan mode") {
+                        Some(Mode::Plan)
+                    } else if lower.contains("switch to chat") || lower.contains("use chat mode") || lower.starts_with("in chat mode") {
+                        Some(Mode::Chat)
+                    } else if lower.contains("switch to orchestrate") || lower.contains("use orchestrate mode") || lower.starts_with("in orchestrate mode") {
+                        Some(Mode::Orchestrate)
+                    } else if lower.contains("switch to tools") || lower.contains("use tools mode") || lower.starts_with("in tools mode") {
+                        Some(Mode::Tools)
+                    } else if lower.contains("leave plan mode") || lower.contains("exit plan mode") || lower.contains("stop planning")
+                        || lower.contains("leave plan") || lower.contains("exit plan")
+                        || lower.contains("leave chat mode") || lower.contains("exit chat mode")
+                        || lower.contains("leave orchestrate mode") || lower.contains("exit orchestrate mode")
+                    {
+                        Some(Mode::Tools) // Default back to tools mode
+                    } else {
+                        None
+                    };
+                    if let Some(new_mode) = mode_switch {
+                        let mode_name = match new_mode {
+                            Mode::Chat => "chat",
+                            Mode::Tools => "tools",
+                            Mode::Orchestrate => "orchestrate",
+                            Mode::Plan => "plan",
+                        };
+                        session.mode = new_mode;
+                        print_success(&format!("✓ Switched to {} mode", mode_name));
+                        println!();
+                        print_mode_help(&session.mode);
+                        // If the input contains more than just the mode switch, strip it and continue
+                        // Otherwise, just continue to next iteration
+                        let stripped = lower
+                            .replace("switch to plan mode", "").replace("switch to plan", "")
+                            .replace("use plan mode", "").replace("enter plan mode", "")
+                            .replace("in plan mode:", "").replace("in plan mode", "")
+                            .replace("switch to chat mode", "").replace("switch to chat", "")
+                            .replace("use chat mode", "").replace("in chat mode:", "").replace("in chat mode", "")
+                            .replace("switch to orchestrate mode", "").replace("switch to orchestrate", "")
+                            .replace("use orchestrate mode", "").replace("in orchestrate mode:", "").replace("in orchestrate mode", "")
+                            .replace("switch to tools mode", "").replace("switch to tools", "")
+                            .replace("use tools mode", "").replace("in tools mode:", "").replace("in tools mode", "")
+                            .replace(".", "").replace(",", "")
+                            .trim().to_string();
+                        if stripped.is_empty() || stripped.len() < 10 {
+                            continue;
+                        }
+                        // Fall through with full input to process the rest in the new mode
+                    }
+                }
+
                 // Process based on mode and task complexity
                 // Each processing path is wrapped with cancellable() so Ctrl+C
                 // during LLM calls or tool execution returns to the prompt.
+                //
+                // Pre-classify orchestration need before the match (needs &session.client)
+                let use_orchestration = if matches!(session.mode, Mode::Tools | Mode::Orchestrate) {
+                    needs_orchestration(input, &session.client).await
+                } else {
+                    false
+                };
+
                 let result = match session.mode {
                     Mode::Chat => {
                         let spinner = create_thinking_spinner();
@@ -2825,15 +3404,14 @@ pub async fn run_interactive(persistent: bool, resume: bool) -> Result<()> {
                         }
                     }
                     Mode::Tools => {
-                        // Auto-detect if orchestration is needed
-                        if needs_orchestration(input) {
+                        // Auto-detect if orchestration is needed (LLM-classified)
+                        if use_orchestration {
                             print_dim("  Complex task detected, switching to orchestrate mode...");
                             println!();
-                            let spinner = create_thinking_spinner();
+                            // No outer spinner — the orchestrator has per-agent spinners
                             match cancellable(process_with_orchestrator(&mut session, input)).await {
-                                Some(r) => { spinner.finish_and_clear(); r }
+                                Some(r) => r,
                                 None => {
-                                    spinner.finish_and_clear();
                                     print_dim("\n⚠ Cancelled.");
                                     println!();
                                     continue;
@@ -2852,7 +3430,7 @@ pub async fn run_interactive(persistent: bool, resume: bool) -> Result<()> {
                         }
                     }
                     Mode::Orchestrate => {
-                        if needs_tools(input) && !needs_orchestration(input) {
+                        if needs_tools(input) && !use_orchestration {
                             print_dim("  Simple task, using tools...");
                             println!();
                             // Spinner created inside run_tool_calling_loop
@@ -2865,11 +3443,10 @@ pub async fn run_interactive(persistent: bool, resume: bool) -> Result<()> {
                                 }
                             }
                         } else {
-                            let spinner = create_thinking_spinner();
+                            // No outer spinner — the orchestrator has per-agent spinners
                             match cancellable(process_with_orchestrator(&mut session, input)).await {
-                                Some(r) => { spinner.finish_and_clear(); r }
+                                Some(r) => r,
                                 None => {
-                                    spinner.finish_and_clear();
                                     print_dim("\n⚠ Cancelled.");
                                     println!();
                                     continue;
@@ -2896,10 +3473,10 @@ pub async fn run_interactive(persistent: bool, resume: bool) -> Result<()> {
                 };
 
                 match result {
-                    Ok(response) => {
-                        // Response already printed during streaming
-                        // Just save to conversation history
-                        session.conversation.add_message(conversation::Role::Assistant, response);
+                    Ok(_response) => {
+                        // Response already printed and added to conversation inside
+                        // process_with_tools / process_with_orchestrator / process_with_plan.
+                        // Do NOT add again here to avoid duplicate messages.
 
                         if session.persistent {
                             session.save().await?;

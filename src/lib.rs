@@ -90,6 +90,19 @@ pub use server::{
     start as start_server,
 };
 
+/// Truncate a string to at most `max_len` bytes at a valid UTF-8 char boundary.
+/// Appends "..." if truncated.
+pub fn truncate_safe(s: &str, max_len: usize) -> String {
+    if s.len() <= max_len {
+        return s.to_string();
+    }
+    let mut end = max_len;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &s[..end])
+}
+
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 

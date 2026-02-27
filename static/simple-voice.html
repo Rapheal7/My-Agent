@@ -1,0 +1,1029 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Simple Voice Assistant</title>
+<meta name="cache-bust" content="silero-vad-017">
+    <!-- Load Silero VAD scripts (like standalone version) -->
+    <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.14.0/dist/ort.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ricky0123/vad@0.2.6/dist/bundle.min.js"></script>
+    <script>
+        // Verify Silero VAD loaded
+        window.sileroReady = false;
+        window.checkSilero = function() {
+            if (typeof vad !== 'undefined' && vad && vad.MicVAD) {
+                window.sileroReady = true;
+                console.log('✅ Silero VAD ready');
+            } else {
+                console.log('⏳ Waiting for Silero VAD...');
+                setTimeout(window.checkSilero, 100);
+            }
+        };
+        // Start checking after page load
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', window.checkSilero);
+        } else {
+            window.checkSilero();
+        }
+    </script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        html, body {
+            height: 100%;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
+            color: #fff;
+            overflow: hidden;
+        }
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        .container {
+            text-align: center;
+            padding: 20px;
+            max-width: 450px;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+        }
+        .header {
+            padding: 15px 0;
+        }
+        .header h1 {
+            font-size: 1.6rem;
+            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            font-size: 0.85rem;
+            color: rgba(255,255,255,0.6);
+        }
+        .mode-toggle {
+            display: flex;
+            justify-content: center;
+            gap: 6px;
+            margin: 10px 0;
+            flex-wrap: wrap;
+        }
+        .mode-btn {
+            padding: 8px 14px;
+            border-radius: 20px;
+            border: 1px solid rgba(139,92,246,0.4);
+            background: rgba(139,92,246,0.1);
+            color: rgba(255,255,255,0.7);
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: all 0.3s;
+        }
+        .mode-btn.active {
+            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+            color: #fff;
+            border-color: transparent;
+        }
+        .status-container {
+            margin: 10px 0;
+        }
+        .status {
+            padding: 10px 20px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            display: inline-block;
+            transition: all 0.3s;
+        }
+        .status.connecting { background: rgba(251, 191, 36, 0.2); color: #fbbf24; }
+        .status.connected { background: rgba(74, 222, 128, 0.2); color: #4ade80; }
+        .status.recording { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+        .status.processing { background: rgba(139, 92, 246, 0.3); color: #a78bfa; }
+        .status.speaking { background: rgba(59, 130, 246, 0.2); color: #60a5fa; }
+        .status.listening { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
+        .status.error { background: rgba(239, 68, 68, 0.2); color: #f87171; }
+
+        .main-controls {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .voice-btn-container {
+            position: relative;
+            margin: 20px 0;
+        }
+
+        .voice-btn {
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            border: none;
+            font-size: 40px;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 20px rgba(139, 92, 246, 0.3);
+            position: relative;
+            z-index: 2;
+            background: linear-gradient(135deg, #8b5cf6 0%, #6366f1 100%);
+        }
+        .voice-btn:active { transform: scale(0.95); }
+        .voice-btn.recording {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            animation: pulse 1.5s infinite;
+        }
+        .voice-btn.speaking {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            box-shadow: 0 4px 20px rgba(59, 130, 246, 0.4);
+        }
+        .voice-btn.listening {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+            box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+            animation: breathe 2s infinite;
+        }
+        .voice-btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 4px 20px rgba(239, 68, 68, 0.4); transform: scale(1); }
+            50% { box-shadow: 0 4px 40px rgba(239, 68, 68, 0.6); transform: scale(1.05); }
+        }
+        @keyframes breathe {
+            0%, 100% { box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4); }
+            50% { box-shadow: 0 4px 30px rgba(34, 197, 94, 0.6); }
+        }
+
+        .transcript-container {
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 16px;
+            padding: 15px;
+            margin: 10px 0;
+            flex: 1;
+            min-height: 120px;
+            max-height: 250px;
+            overflow-y: auto;
+            text-align: left;
+        }
+        .transcript {
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+        .transcript .msg {
+            margin: 10px 0;
+            padding: 10px 14px;
+            border-radius: 12px;
+            max-width: 85%;
+            word-wrap: break-word;
+            animation: fadeIn 0.3s ease;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .transcript .msg.user {
+            background: rgba(139, 92, 246, 0.2);
+            color: #e9d5ff;
+            margin-left: auto;
+            border-bottom-right-radius: 4px;
+        }
+        .transcript .msg.agent {
+            background: rgba(34, 197, 94, 0.15);
+            color: #bbf7d0;
+            margin-right: auto;
+            border-bottom-left-radius: 4px;
+        }
+        .transcript .msg.system {
+            background: rgba(255, 255, 255, 0.1);
+            color: rgba(255, 255, 255, 0.6);
+            text-align: center;
+            font-size: 0.85rem;
+            margin: 8px auto;
+            max-width: 90%;
+        }
+        .transcript .placeholder {
+            color: rgba(255,255,255,0.3);
+            text-align: center;
+            padding: 40px 0;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin: 10px 0;
+        }
+        .control-btn {
+            padding: 8px 16px;
+            background: rgba(139,92,246,0.2);
+            border: 1px solid rgba(139,92,246,0.4);
+            border-radius: 10px;
+            color: #fff;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.3s;
+        }
+        .control-btn:hover {
+            background: rgba(139,92,246,0.3);
+        }
+
+        .footer {
+            padding: 10px 0;
+            font-size: 0.7rem;
+            color: rgba(255,255,255,0.4);
+        }
+
+        @media (max-width: 480px) {
+            .header h1 { font-size: 1.4rem; }
+            .voice-btn { width: 90px; height: 90px; font-size: 36px; }
+            .transcript-container { min-height: 100px; max-height: 200px; }
+            .mode-btn { padding: 6px 12px; font-size: 0.75rem; }
+        }
+
+        .audio-visualizer {
+            display: flex;
+            justify-content: center;
+            gap: 4px;
+            height: 40px;
+            margin: 10px 0;
+            opacity: 0;
+            transition: opacity 0.3s;
+        }
+        .audio-visualizer.active { opacity: 1; }
+        .audio-visualizer .bar {
+            width: 4px;
+            background: linear-gradient(to top, #8b5cf6, #6366f1);
+            border-radius: 2px;
+            transition: height 0.05s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Voice Assistant</h1>
+            <div class="subtitle">Have a natural conversation</div>
+        </div>
+
+        <div class="mode-toggle">
+            <button id="pushToTalkBtn" class="mode-btn active">Push to Talk</button>
+            <button id="continuousBtn" class="mode-btn">Continuous</button>
+            <button id="realtimeBtn" class="mode-btn">Real-time</button>
+        </div>
+
+        <div class="status-container">
+            <div id="status" class="status">Ready</div>
+        </div>
+
+        <div class="main-controls">
+            <div class="audio-visualizer" id="visualizer">
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+                <div class="bar"></div>
+            </div>
+
+            <div class="voice-btn-container">
+                <button id="voiceBtn" class="voice-btn">🎤</button>
+            </div>
+
+            <div class="controls">
+                <button class="control-btn" onclick="testAudio()">🔊 Test</button>
+                <button class="control-btn" onclick="clearTranscript()">🗑️ Clear</button>
+            </div>
+        </div>
+
+        <div class="transcript-container">
+            <div class="transcript" id="transcript">
+                <div class="placeholder">Press and hold the mic button to speak...</div>
+            </div>
+        </div>
+
+        <div class="footer">
+            Whisper + Grok 4.1 + Piper
+        </div>
+    </div>
+
+    <script>
+        const statusEl = document.getElementById('status');
+        const voiceBtn = document.getElementById('voiceBtn');
+        const transcriptEl = document.getElementById('transcript');
+        const visualizer = document.getElementById('visualizer');
+        const pushToTalkBtn = document.getElementById('pushToTalkBtn');
+        const continuousBtn = document.getElementById('continuousBtn');
+        const realtimeBtn = document.getElementById('realtimeBtn');
+
+        let ws = null;
+        let mediaRecorder = null;
+        let audioChunks = [];
+        let isRecording = false;
+        let isProcessing = false;
+        let isSpeaking = false;
+        let audioContext = null;
+        let currentAudio = null;  // Store current audio element for stopping
+        let mode = 'pushToTalk'; // pushToTalk, continuous, realtime
+
+        // VAD variables
+        let vadAudioContext = null;
+        let vadAnalyser = null;
+        let isSpeechDetected = false;
+        let silenceStartTime = null;
+        let vadRecordingStartTime = null;
+        let vadRafId = null;
+        let vadManuallyStopped = false;
+        let vadInitialized = false;  // Track if VAD has been initialized
+        const SPEECH_THRESHOLD = 0.08;
+        const SILENCE_DURATION = 800;
+        const MIN_SPEECH_DURATION = 400;
+
+        const WS_URL = (window.location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + window.location.host + '/voice-ws';
+
+        function setStatus(type, text) {
+            statusEl.className = 'status ' + type;
+            statusEl.textContent = text;
+        }
+
+        function addMessage(text, type) {
+            const placeholder = transcriptEl.querySelector('.placeholder');
+            if (placeholder) placeholder.remove();
+
+            const msg = document.createElement('div');
+            msg.className = 'msg ' + type;
+
+            if (type === 'user') {
+                msg.innerHTML = '<span style="opacity:0.7">You:</span> ' + escapeHtml(text);
+            } else if (type === 'agent') {
+                // Format markdown text for display
+                const formattedText = formatMarkdown(escapeHtml(text));
+                msg.innerHTML = '<span style="opacity:0.7">AI:</span> ' + formattedText;
+            } else {
+                msg.textContent = text;
+            }
+
+            transcriptEl.appendChild(msg);
+            transcriptEl.scrollTop = transcriptEl.scrollHeight;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Format markdown text to HTML for display
+        function formatMarkdown(text) {
+            // Convert **bold** to <strong>
+            text = text.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+            // Convert *italic* to <em>
+            text = text.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+            // Convert `code` to <code>
+            text = text.replace(/`([^`]+)`/g, '<code style="background:rgba(0,0,0,0.2);padding:2px 4px;border-radius:3px;font-family:monospace;">$1</code>');
+            // Convert URLs to links
+            text = text.replace(/https?:\/\/[^\s<]+/g, '<a href="$&" target="_blank" style="color:#60a5fa;text-decoration:underline;">$&</a>');
+            // Convert newlines to <br>
+            text = text.replace(/\n/g, '<br>');
+            return text;
+        }
+
+        function clearTranscript() {
+            transcriptEl.innerHTML = '<div class="placeholder">Press and hold the mic button to speak...</div>';
+        }
+
+        function setActiveMode(newMode) {
+            mode = newMode;
+            pushToTalkBtn.classList.remove('active');
+            continuousBtn.classList.remove('active');
+            realtimeBtn.classList.remove('active');
+
+            if (mode === 'pushToTalk') {
+                pushToTalkBtn.classList.add('active');
+                stopRecording();
+                setStatus('connected', 'Hold mic to speak');
+            } else if (mode === 'continuous') {
+                continuousBtn.classList.add('active');
+                stopRecording();
+                setStatus('connected', 'Tap mic to start conversation');
+            } else if (mode === 'realtime') {
+                realtimeBtn.classList.add('active');
+                stopRecording();
+                setStatus('connected', 'Tap mic to start real-time VAD');
+            }
+        }
+
+        pushToTalkBtn.addEventListener('click', () => setActiveMode('pushToTalk'));
+        continuousBtn.addEventListener('click', () => setActiveMode('continuous'));
+        realtimeBtn.addEventListener('click', () => setActiveMode('realtime'));
+
+        function connect() {
+            console.log('Connecting to WebSocket:', WS_URL);
+            setStatus('connecting', 'Connecting...');
+
+            ws = new WebSocket(WS_URL);
+
+            ws.onopen = () => {
+                console.log('WebSocket connected');
+                updateStatusForMode();
+            };
+
+            ws.onclose = () => {
+                console.log('WebSocket closed');
+                setStatus('error', 'Disconnected - Reconnecting...');
+                setTimeout(connect, 2000);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+                setStatus('error', 'Connection error');
+            };
+
+            ws.onmessage = async (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    console.log('Received:', data);
+
+                    if (data.type === 'response') {
+                        isProcessing = false;
+
+                        if (data.transcript) {
+                            addMessage(data.transcript, 'user');
+                        }
+
+                        if (data.response || data.text) {
+                            const responseText = data.response || data.text;
+                            addMessage(responseText, 'agent');
+
+                            if (data.audio) {
+                                isSpeaking = true;
+                                setStatus('speaking', 'AI is speaking...');
+                                voiceBtn.classList.remove('recording', 'listening');
+                                voiceBtn.classList.add('speaking');
+                                voiceBtn.textContent = '🔊';
+
+                                await playAudio(data.audio);
+
+                                isSpeaking = false;
+                                voiceBtn.classList.remove('speaking');
+                                voiceBtn.textContent = '🎤';
+
+                                // Auto-restart for continuous/realtime modes
+                                if (mode === 'continuous') {
+                                    setTimeout(() => {
+                                        if (!isRecording && !isProcessing && !isSpeaking) {
+                                            startRecording();
+                                        }
+                                    }, 500);
+                                } else if (mode === 'realtime') {
+                                    setTimeout(() => {
+                                        if (!isRecording && !isProcessing && !isSpeaking) {
+                                            startVADRecording();
+                                        }
+                                    }, 500);
+                                }
+                            }
+                            updateStatusForMode();
+                        }
+                    } else if (data.type === 'status') {
+                        setStatus('processing', data.text);
+                    } else if (data.type === 'error') {
+                        isProcessing = false;
+                        setStatus('error', 'Error: ' + data.text);
+                        addMessage('Error: ' + data.text, 'system');
+                        voiceBtn.classList.remove('recording');
+                        voiceBtn.textContent = '🎤';
+                    }
+                } catch (e) {
+                    console.error('Error parsing message:', e);
+                }
+            };
+        }
+
+        function updateStatusForMode() {
+            if (isRecording) return;
+            if (mode === 'pushToTalk') {
+                setStatus('connected', 'Hold mic to speak');
+            } else if (mode === 'continuous') {
+                setStatus('connected', 'Tap mic to speak');
+            } else if (mode === 'realtime') {
+                setStatus('connected', 'Tap mic for real-time');
+            }
+        }
+
+        function playAudio(base64Audio) {
+            return new Promise((resolve) => {
+                try {
+                    currentAudio = new Audio('data:audio/wav;base64,' + base64Audio);
+                    currentAudio.onended = () => {
+                        currentAudio = null;
+                        resolve();
+                    };
+                    currentAudio.onerror = () => {
+                        console.error('Audio play error');
+                        currentAudio = null;
+                        resolve();
+                    };
+                    currentAudio.play().catch(e => {
+                        console.error('Audio play error:', e);
+                        currentAudio = null;
+                        resolve();
+                    });
+                } catch (e) {
+                    console.error('Error playing audio:', e);
+                    currentAudio = null;
+                    resolve();
+                }
+            });
+        }
+
+        function stopAudio() {
+            if (currentAudio) {
+                currentAudio.pause();
+                currentAudio.currentTime = 0;
+                currentAudio = null;
+                console.log('Audio stopped');
+            }
+        }
+
+        // Standard recording (for push to talk)
+        async function startRecording() {
+            if (isRecording || isProcessing || isSpeaking) return;
+
+            try {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    addMessage('Not connected. Please wait...', 'system');
+                    return;
+                }
+
+                // Update UI immediately before async operations
+                isRecording = true;
+                voiceBtn.classList.add('recording');
+                voiceBtn.textContent = '🔴';
+                visualizer.classList.add('active');
+                startVisualizer();
+                setStatus('recording', 'Recording...');
+
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+
+                const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+                    ? 'audio/webm'
+                    : 'audio/mp4';
+
+                mediaRecorder = new MediaRecorder(stream, { mimeType });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    const blob = new Blob(audioChunks, { type: mimeType });
+                    const reader = new FileReader();
+                    reader.readAsDataURL(blob);
+                    reader.onloadend = () => {
+                        const base64 = reader.result.split(',')[1];
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            isProcessing = true;
+                            ws.send(JSON.stringify({
+                                type: 'voice',
+                                audio_data: base64
+                            }));
+                            setStatus('processing', 'Processing...');
+                        }
+                    };
+                    stream.getTracks().forEach(t => t.stop());
+                };
+
+                mediaRecorder.start();
+                isRecording = true;
+                voiceBtn.classList.add('recording');
+                voiceBtn.textContent = '🎤';
+                visualizer.classList.add('active');
+                setStatus('recording', mode === 'continuous' ? 'Listening... (tap to stop)' : 'Recording... Release to send');
+                startVisualizer();
+
+            } catch (e) {
+                console.error('Recording error:', e);
+                addMessage('Microphone error: ' + e.message, 'system');
+                setStatus('error', 'Microphone access denied');
+            }
+        }
+
+        function stopRecording() {
+            if (mode === 'realtime' && vadInstance) {
+                // Silero VAD mode
+                vadManuallyStopped = true;
+                stopVAD();
+                isRecording = false;
+                isSpeechDetected = false;
+                voiceBtn.classList.remove('recording', 'listening');
+                voiceBtn.textContent = '🎤';
+                visualizer.classList.remove('active');
+                stopVisualizer();
+                setStatus('connected', 'Tap mic for real-time');
+            } else if (mediaRecorder && isRecording) {
+                // Standard recording mode
+                mediaRecorder.stop();
+                isRecording = false;
+                isSpeechDetected = false;
+                voiceBtn.classList.remove('recording', 'listening');
+                voiceBtn.textContent = '🎤';
+                visualizer.classList.remove('active');
+                stopVisualizer();
+                if (mode === 'pushToTalk') {
+                    setStatus('processing', 'Processing...');
+                }
+            }
+        }
+
+        // Silero VAD Recording (for realtime mode)
+        let vadInstance = null;
+        let vadStream = null;
+
+        async function startVADRecording() {
+            if (isRecording || isProcessing || isSpeaking) return;
+
+            try {
+                if (!ws || ws.readyState !== WebSocket.OPEN) {
+                    addMessage('Not connected. Please wait...', 'system');
+                    return;
+                }
+
+                // UI updates - show IMMEDIATELY before any checks
+                isRecording = true;
+                voiceBtn.classList.add('listening');
+                voiceBtn.textContent = '👂';
+                visualizer.classList.add('active');
+                setStatus('listening', 'Listening...');
+
+                // Check if Silero VAD is available
+                const sileroAvailable = window.sileroReady && typeof vad !== 'undefined' && vad && vad.MicVAD;
+
+                if (!sileroAvailable) {
+                    console.log('Silero not ready, using fallback VAD');
+                    startFallbackVAD();
+                    return;
+                }
+
+                audioChunks = [];
+                vadManuallyStopped = false;
+                setStatus('listening', 'Listening...');
+
+                // Initialize Silero VAD
+                vadInstance = await vad.MicVAD.new({
+                    onSpeechStart: () => {
+                        console.log('Speech started');
+                        isSpeechDetected = true;
+                        voiceBtn.classList.remove('listening');
+                        voiceBtn.classList.add('recording');
+                        voiceBtn.textContent = '🎤';
+                        setStatus('recording', 'Hearing you...');
+                    },
+                    onSpeechEnd: (audio) => {
+                        console.log('Speech ended, audio length:', audio.length);
+                        if (vadManuallyStopped) {
+                            return; // Don't process if manually stopped
+                        }
+
+                        // Convert Float32Array audio to WAV and send
+                        const wavBuffer = floatToWav(audio, 16000);
+                        const base64 = arrayBufferToBase64(wavBuffer);
+
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            isProcessing = true;
+                            ws.send(JSON.stringify({
+                                type: 'voice',
+                                audio_data: base64
+                            }));
+                            setStatus('processing', 'Processing...');
+                        }
+                    },
+                    onVADMisfire: () => {
+                        console.log('VAD misfire (noise detected)');
+                    },
+                    workletOptions: {
+                        bufferSize: 512
+                    }
+                });
+
+                vadStream = vadInstance.stream;
+                await vadInstance.start();
+                console.log('Silero VAD started successfully');
+
+            } catch (e) {
+                console.error('VAD recording error:', e);
+                addMessage('VAD error: ' + e.message, 'system');
+                setStatus('error', 'Microphone/VAD error');
+                isRecording = false;
+            }
+        }
+
+        // Convert Float32Array to WAV format
+        function floatToWav(samples, sampleRate) {
+            const buffer = new ArrayBuffer(44 + samples.length * 2);
+            const view = new DataView(buffer);
+
+            // WAV header
+            const writeString = (offset, string) => {
+                for (let i = 0; i < string.length; i++) {
+                    view.setUint8(offset + i, string.charCodeAt(i));
+                }
+            };
+
+            writeString(0, 'RIFF');
+            view.setUint32(4, 36 + samples.length * 2, true);
+            writeString(8, 'WAVE');
+            writeString(12, 'fmt ');
+            view.setUint32(16, 16, true);
+            view.setUint16(20, 1, true); // PCM
+            view.setUint16(22, 1, true); // Mono
+            view.setUint32(24, sampleRate, true);
+            view.setUint32(28, sampleRate * 2, true);
+            view.setUint16(32, 2, true);
+            view.setUint16(34, 16, true); // 16-bit
+            writeString(36, 'data');
+            view.setUint32(40, samples.length * 2, true);
+
+            // Convert float to int16
+            for (let i = 0; i < samples.length; i++) {
+                const s = Math.max(-1, Math.min(1, samples[i]));
+                view.setInt16(44 + i * 2, s * 0x7FFF, true);
+            }
+
+            return buffer;
+        }
+
+        // Convert ArrayBuffer to Base64
+        function arrayBufferToBase64(buffer) {
+            const bytes = new Uint8Array(buffer);
+            let binary = '';
+            for (let i = 0; i < bytes.byteLength; i++) {
+                binary += String.fromCharCode(bytes[i]);
+            }
+            return btoa(binary);
+        }
+
+        // WebRTC VAD fallback using browser's native audio analysis
+        async function startFallbackVAD() {
+            console.log('Starting fallback VAD');
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000
+                    }
+                });
+
+                // Setup audio context for analysis
+                vadAudioContext = new (window.AudioContext || window.webkitAudioContext)();
+                vadAnalyser = vadAudioContext.createAnalyser();
+                vadAnalyser.fftSize = 512;
+                vadAnalyser.smoothingTimeConstant = 0.8;
+
+                const source = vadAudioContext.createMediaStreamSource(stream);
+                source.connect(vadAnalyser);
+
+                // Setup MediaRecorder
+                const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+                    ? 'audio/webm'
+                    : 'audio/mp4';
+
+                mediaRecorder = new MediaRecorder(stream, { mimeType });
+                audioChunks = [];
+
+                mediaRecorder.ondataavailable = (e) => {
+                    if (e.data.size > 0) audioChunks.push(e.data);
+                };
+
+                mediaRecorder.onstop = () => {
+                    if (vadAudioContext) {
+                        vadAudioContext.close();
+                        vadAudioContext = null;
+                    }
+
+                    // If manually stopped, discard audio
+                    if (vadManuallyStopped) {
+                        vadManuallyStopped = false;
+                        audioChunks = [];
+                        stream.getTracks().forEach(t => t.stop());
+                        setStatus('connected', 'Tap mic for real-time');
+                        return;
+                    }
+
+                    const blob = new Blob(audioChunks, { type: mimeType });
+                    const reader = new FileReader();
+                    reader.readAsDataURL(blob);
+                    reader.onloadend = () => {
+                        const base64 = reader.result.split(',')[1];
+                        if (ws && ws.readyState === WebSocket.OPEN && audioChunks.length > 0) {
+                            isProcessing = true;
+                            ws.send(JSON.stringify({
+                                type: 'voice',
+                                audio_data: base64
+                            }));
+                            setStatus('processing', 'Processing...');
+                        }
+                    };
+                    stream.getTracks().forEach(t => t.stop());
+                };
+
+                mediaRecorder.start(100);
+                isRecording = true;
+                isSpeechDetected = false;
+                silenceStartTime = null;
+                let speechStartTime = null;
+
+                voiceBtn.classList.add('listening');
+                voiceBtn.textContent = '👂';
+                visualizer.classList.add('active');
+                setStatus('listening', 'Listening... speak now');
+
+                // Simple energy-based VAD loop
+                const FALLBACK_THRESHOLD = 0.05;
+                const FALLBACK_SILENCE = 600;
+                const FALLBACK_MIN_SPEECH = 300;
+
+                function fallbackVADLoop() {
+                    if (!isRecording || !vadAnalyser) return;
+
+                    const dataArray = new Uint8Array(vadAnalyser.frequencyBinCount);
+                    vadAnalyser.getByteTimeDomainData(dataArray);
+
+                    // Calculate RMS volume
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) {
+                        const x = (dataArray[i] - 128) / 128.0;
+                        sum += x * x;
+                    }
+                    const volume = Math.sqrt(sum / dataArray.length);
+
+                    // Update visualizer
+                    const bars = visualizer.querySelectorAll('.bar');
+                    const barHeight = Math.min(40, volume * 400);
+                    bars.forEach((bar, i) => {
+                        const offset = Math.sin(Date.now() / 200 + i * 0.5) * 3;
+                        const h = Math.max(5, Math.min(40, barHeight + offset));
+                        bar.style.height = h + 'px';
+                    });
+
+                    // VAD logic
+                    if (volume > FALLBACK_THRESHOLD) {
+                        if (!isSpeechDetected) {
+                            isSpeechDetected = true;
+                            speechStartTime = Date.now();
+                            voiceBtn.classList.remove('listening');
+                            voiceBtn.classList.add('recording');
+                            voiceBtn.textContent = '🎤';
+                            setStatus('recording', 'Hearing you...');
+                        }
+                        silenceStartTime = null;
+                    } else if (isSpeechDetected) {
+                        if (!silenceStartTime) {
+                            silenceStartTime = Date.now();
+                        } else {
+                            const silenceDuration = Date.now() - silenceStartTime;
+                            const speechDuration = Date.now() - speechStartTime;
+
+                            if (silenceDuration > FALLBACK_SILENCE && speechDuration > FALLBACK_MIN_SPEECH) {
+                                // Auto-stop and send
+                                vadManuallyStopped = false;
+                                stopRecording();
+                                return;
+                            }
+                        }
+                    }
+
+                    if (isRecording) {
+                        vadRafId = requestAnimationFrame(fallbackVADLoop);
+                    }
+                }
+
+                fallbackVADLoop();
+
+            } catch (e) {
+                console.error('Fallback VAD error:', e);
+                addMessage('Microphone error: ' + e.message, 'system');
+                setStatus('error', 'Microphone access denied');
+            }
+        }
+
+        function stopVAD() {
+            if (vadInstance) {
+                vadInstance.pause();
+                vadInstance = null;
+            }
+            if (vadStream) {
+                vadStream.getTracks().forEach(t => t.stop());
+                vadStream = null;
+            }
+        }
+
+        let visualizerInterval;
+        function startVisualizer() {
+            const bars = visualizer.querySelectorAll('.bar');
+            visualizerInterval = setInterval(() => {
+                bars.forEach(bar => {
+                    bar.style.height = (Math.random() * 30 + 10) + 'px';
+                });
+            }, 100);
+        }
+
+        function stopVisualizer() {
+            clearInterval(visualizerInterval);
+            const bars = visualizer.querySelectorAll('.bar');
+            bars.forEach(bar => bar.style.height = '5px');
+        }
+
+        // Voice button handler
+        function handleVoiceButton(e) {
+            e.preventDefault();
+
+            // If agent is speaking, stop audio immediately (interrupt)
+            if (isSpeaking) {
+                stopAudio();
+                isSpeaking = false;
+                voiceBtn.classList.remove('speaking');
+                voiceBtn.textContent = '🎤';
+                setStatus('connected', 'Tap mic to speak');
+                addMessage('(Interrupted)', 'system');
+                return;
+            }
+
+            if (mode === 'pushToTalk') {
+                if (!isRecording && !isProcessing && !isSpeaking) {
+                    startRecording();
+                }
+            } else if (mode === 'continuous') {
+                if (isRecording) {
+                    stopRecording();
+                } else if (!isProcessing && !isSpeaking) {
+                    startRecording();
+                }
+            } else if (mode === 'realtime') {
+                if (isRecording) {
+                    // Mark as manually stopped so audio is discarded
+                    vadManuallyStopped = true;
+                    stopRecording();
+                } else if (!isProcessing && !isSpeaking) {
+                    vadManuallyStopped = false;
+                    startVADRecording();
+                }
+            }
+        }
+
+        function handleVoiceButtonRelease(e) {
+            e.preventDefault();
+            if (mode === 'pushToTalk' && isRecording) {
+                stopRecording();
+            }
+        }
+
+        voiceBtn.addEventListener('mousedown', handleVoiceButton);
+        voiceBtn.addEventListener('mouseup', handleVoiceButtonRelease);
+        voiceBtn.addEventListener('mouseleave', handleVoiceButtonRelease);
+        voiceBtn.addEventListener('touchstart', handleVoiceButton);
+        voiceBtn.addEventListener('touchend', handleVoiceButtonRelease);
+
+        function testAudio() {
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            const osc = audioContext.createOscillator();
+            const gain = audioContext.createGain();
+            osc.connect(gain);
+            gain.connect(audioContext.destination);
+            osc.frequency.value = 440;
+            gain.gain.setValueAtTime(0.3, audioContext.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+            osc.start();
+            osc.stop(audioContext.currentTime + 0.5);
+            addMessage('🔊 Test sound played!', 'system');
+        }
+
+        connect();
+
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && (!ws || ws.readyState !== WebSocket.OPEN)) {
+                connect();
+            }
+        });
+    </script>
+</body>
+</html>

@@ -372,17 +372,13 @@ impl ShellTool {
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
                 let stdout = if stdout.len() > self.config.max_output_size {
-                    format!("{}...[truncated, total: {} bytes]",
-                        &stdout[..self.config.max_output_size.min(stdout.len())],
-                        stdout.len())
+                    crate::truncate_safe(&stdout, self.config.max_output_size)
                 } else {
                     stdout.to_string()
                 };
 
                 let stderr = if stderr.len() > self.config.max_output_size {
-                    format!("{}...[truncated, total: {} bytes]",
-                        &stderr[..self.config.max_output_size.min(stderr.len())],
-                        stderr.len())
+                    crate::truncate_safe(&stderr, self.config.max_output_size)
                 } else {
                     stderr.to_string()
                 };

@@ -8,8 +8,11 @@ use crate::tools::filesystem::FileSystemTool;
 use crate::tools::shell::ShellTool;
 use crate::tools::web::WebTool;
 use crate::tools::desktop::DesktopTool;
+use crate::tools::browser::{RefMap, BrowserTool};
 use crate::security::ApprovalManager;
 use std::sync::Arc;
+use std::collections::HashMap;
+use tokio::sync::Mutex;
 
 /// Tool definition for LLM
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +32,10 @@ pub struct ToolContext {
     pub approver: ApprovalManager,
     /// Optional device registry for remote tool routing
     pub device_registry: Option<Arc<crate::server::device::DeviceRegistry>>,
+    /// Shared browser tool instance (persists sessions across tool calls)
+    pub browser: Arc<BrowserTool>,
+    /// Browser accessibility ref maps keyed by session_id
+    pub browser_refs: Arc<Mutex<HashMap<String, RefMap>>>,
 }
 
 impl ToolContext {
@@ -41,6 +48,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -98,6 +107,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver,
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -110,6 +121,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -122,6 +135,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -134,6 +149,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver: ApprovalManager::with_defaults(),
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -158,6 +175,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver,
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -175,6 +194,8 @@ impl ToolContext {
             desktop: DesktopTool::new(),
             approver,
             device_registry: None,
+            browser: Arc::new(BrowserTool::new()),
+            browser_refs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -408,6 +429,36 @@ pub fn builtin_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "create_markdown_skill".to_string(),
+            description: "Create a new SKILL.md skill from a description. ALWAYS call this tool when the user \
+                asks to create a skill — do NOT just describe the skill textually. \
+                The skill is saved to disk and immediately available via use_skill. \
+                Uses a capable LLM to generate natural language instructions.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Description of what the skill should do"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "Optional skill name (inferred from description if not provided)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Skill category: Filesystem, Shell, Web, Data, System, Utility"
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags for discovery"
+                    }
+                },
+                "required": ["description"]
+            }),
+        },
+        Tool {
             name: "use_skill".to_string(),
             description: "Execute a skill by ID. Use list_skills to discover available skills.".to_string(),
             parameters: serde_json::json!({
@@ -428,19 +479,20 @@ pub fn builtin_tools() -> Vec<Tool> {
         // Exploration tools
         Tool {
             name: "search_content".to_string(),
-            description: "Search for a text pattern in all files within a directory (like grep -r). \
-                Returns file paths and line numbers where the pattern was found. \
-                Use for finding code, configurations, or any text in files.".to_string(),
+            description: "Search for an exact text/keyword pattern in files (like grep -r). \
+                The 'pattern' parameter must be the literal text to find — e.g. 'TODO', 'FIXME', 'fn main', 'import os'. \
+                Do NOT pass common English words like 'all', 'the', 'find', 'each'. \
+                For 'Find all TODO comments' → pattern='TODO'. For 'search for FIXME' → pattern='FIXME'.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "Directory to search in (defaults to current directory)"
+                        "description": "Directory to search in (defaults to project root)"
                     },
                     "pattern": {
                         "type": "string",
-                        "description": "Text pattern to search for"
+                        "description": "The exact text/keyword to search for in file contents. Examples: 'TODO', 'FIXME', 'fn main', 'import'. Must be the specific code keyword, not a natural language description."
                     },
                     "file_pattern": {
                         "type": "string",
@@ -513,8 +565,8 @@ pub fn builtin_tools() -> Vec<Tool> {
         Tool {
             name: "edit_personality".to_string(),
             description: "Edit your own personality file to change how you behave. \
-                Use this to customize your traits, communication style, and system prompt. \
-                Changes take effect after reload or restart.".to_string(),
+                You MUST call this tool to make any personality change — there is no other way. \
+                Never claim you changed your personality without calling this tool first.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -528,6 +580,16 @@ pub fn builtin_tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["field", "value"]
+            }),
+        },
+        Tool {
+            name: "get_personality".to_string(),
+            description: "Read your current personality settings (name, traits, style, greeting, etc.). \
+                No approval needed. Use this to check your identity or verify personality changes.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
             }),
         },
         Tool {
@@ -583,7 +645,8 @@ pub fn builtin_tools() -> Vec<Tool> {
         Tool {
             name: "self_diagnose".to_string(),
             description: "Diagnose issues with your own tools and configuration. \
-                Use this when a tool fails repeatedly or you suspect something is broken. \
+                ALWAYS call this tool FIRST when the user asks for a self-diagnosis, health check, \
+                or asks if tools are working. Do NOT fabricate a diagnosis report — actually run this tool. \
                 Returns diagnostic information and potential fixes.".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
@@ -696,8 +759,10 @@ pub fn builtin_tools() -> Vec<Tool> {
         // Desktop control tools
         Tool {
             name: "capture_screen".to_string(),
-            description: "Capture a screenshot of the desktop. Use this to see what's currently on screen. \
-                Returns the image as base64-encoded PNG data. This tool is automatic (no approval needed).".to_string(),
+            description: "Capture a screenshot of the desktop and analyze it with a vision model. \
+                The screenshot is automatically sent to a multimodal vision model which returns a detailed \
+                text description of what's on screen. Use this to see and understand what's currently displayed. \
+                This tool is automatic (no approval needed).".to_string(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -879,6 +944,94 @@ pub fn builtin_tools() -> Vec<Tool> {
                     }
                 },
                 "required": ["name"]
+            }),
+        },
+        // Utility tool for pacing between actions
+        Tool {
+            name: "wait".to_string(),
+            description: "Wait/pause for a specified duration. No approval needed. \
+                Use this between desktop or browser actions when the UI needs time to update \
+                (e.g., after scrolling, clicking, or navigating). Max 5 seconds.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Seconds to wait (0.1 to 5.0)",
+                        "default": 1.0
+                    }
+                },
+                "required": []
+            }),
+        },
+        // Browser automation tools
+        Tool {
+            name: "browser_navigate".to_string(),
+            description: "Navigate a browser to a URL using Chrome DevTools Protocol. \
+                Auto-creates a browser session if one doesn't exist. Use this INSTEAD of open_application \
+                when you need to interact with web pages via browser_snapshot/browser_act.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "URL to navigate to (e.g., 'https://google.com')"
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser session ID (default: 'default')"
+                    }
+                },
+                "required": ["url"]
+            }),
+        },
+        Tool {
+            name: "browser_snapshot".to_string(),
+            description: "Get an accessibility tree snapshot of a browser page. Returns interactive elements \
+                with ref IDs (@e1, @e2, ...) that can be targeted with browser_act. \
+                Auto-creates a browser session if one doesn't exist. \
+                Optionally pass a 'url' to navigate before taking the snapshot.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser session ID (default: 'default')"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to before taking snapshot"
+                    }
+                },
+                "required": []
+            }),
+        },
+        Tool {
+            name: "browser_act".to_string(),
+            description: "Act on a browser element by its ref ID from browser_snapshot. \
+                Actions: click, type, select, hover, focus. \
+                For type/select, provide a value parameter.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "session_id": {
+                        "type": "string",
+                        "description": "Browser session ID"
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Element ref ID from browser_snapshot (e.g., '@e1')"
+                    },
+                    "action": {
+                        "type": "string",
+                        "description": "Action to perform: click, type, select, hover, focus"
+                    },
+                    "value": {
+                        "type": "string",
+                        "description": "Value for type/select actions"
+                    }
+                },
+                "required": ["session_id", "ref", "action"]
             }),
         },
         // Remote device tools
@@ -1082,6 +1235,55 @@ pub fn builtin_tools() -> Vec<Tool> {
                 "required": ["entry_id"]
             }),
         },
+        // Persistent memory tools — write directly to MEMORY.md (loaded every session)
+        Tool {
+            name: "remember_fact".to_string(),
+            description: "Save a fact, preference, or important piece of knowledge to MEMORY.md. \
+                This is loaded at the start of EVERY session so the agent always remembers it. \
+                ALWAYS use this when the user says 'remember', 'always do X', 'I prefer', \
+                or shares important project/personal preferences. \
+                Examples: 'User prefers tabs over spaces', 'Project uses PostgreSQL 15', \
+                'Deploy command: kubectl apply -f k8s/prod/'".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "category": {
+                        "type": "string",
+                        "description": "Category: 'user_preference', 'project_fact', 'workflow', 'environment', 'general'"
+                    },
+                    "fact": {
+                        "type": "string",
+                        "description": "The fact or preference to remember (concise, one line)"
+                    }
+                },
+                "required": ["fact"]
+            }),
+        },
+        Tool {
+            name: "forget_fact".to_string(),
+            description: "Remove a previously remembered fact from MEMORY.md. \
+                Use when the user says 'forget X' or 'stop remembering X'.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "fact": {
+                        "type": "string",
+                        "description": "The fact text to remove (or a substring to match)"
+                    }
+                },
+                "required": ["fact"]
+            }),
+        },
+        Tool {
+            name: "recall_memories".to_string(),
+            description: "Read and display all persistent memories from MEMORY.md. \
+                Use when the user asks 'what do you remember', 'what do you know about me', etc.".to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
     ]
 }
 
@@ -1174,11 +1376,20 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
     }
 
+    // Helper: extract "path" argument, accepting common LLM aliases
+    let get_path_arg = |args: &serde_json::Value| -> Option<String> {
+        args["path"].as_str()
+            .or_else(|| args["file_path"].as_str())
+            .or_else(|| args["filepath"].as_str())
+            .map(|s| s.to_string())
+    };
+
     // Execute locally
     match call.name.as_str() {
         "read_file" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
 
             match ctx.filesystem.read_file(path).await {
                 Ok(content) => Ok(ToolResult {
@@ -1200,8 +1411,9 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "write_file" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
             let content = call.arguments["content"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
 
@@ -1232,8 +1444,9 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "append_file" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
             let content = call.arguments["content"].as_str()
                 .ok_or_else(|| anyhow::anyhow!("Missing 'content' argument"))?;
 
@@ -1264,7 +1477,15 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "list_directory" => {
-            let path = call.arguments["path"].as_str().unwrap_or(".");
+            let raw_path_owned = get_path_arg(&call.arguments).unwrap_or_else(|| ".".to_string());
+            let raw_path = raw_path_owned.as_str();
+            // Resolve "." to the project root so listings are scoped to the actual project
+            let resolved_path = if raw_path == "." || raw_path.is_empty() {
+                find_project_root().display().to_string()
+            } else {
+                raw_path.to_string()
+            };
+            let path = &resolved_path;
 
             match ctx.filesystem.list_directory(path).await {
                 Ok(listing) => {
@@ -1302,8 +1523,9 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "file_info" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
 
             match ctx.filesystem.file_info(path).await {
                 Ok(info) => Ok(ToolResult {
@@ -1370,8 +1592,9 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "create_directory" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
 
             match ctx.filesystem.create_directory(path).await {
                 Ok(result) => match result {
@@ -1400,8 +1623,9 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
         }
 
         "delete_file" => {
-            let path = call.arguments["path"].as_str()
+            let path = get_path_arg(&call.arguments)
                 .ok_or_else(|| anyhow::anyhow!("Missing 'path' argument"))?;
+            let path = path.as_str();
 
             match ctx.filesystem.delete_file(path).await {
                 Ok(result) => match result {
@@ -1453,12 +1677,7 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
                             "OK".to_string()
                         } else {
                             // Show first 200 chars of stdout in the message
-                            let preview = if stdout_preview.len() > 200 {
-                                format!("{}...", &stdout_preview[..200])
-                            } else {
-                                stdout_preview.to_string()
-                            };
-                            preview
+                            crate::truncate_safe(stdout_preview, 200)
                         }
                     } else {
                         // Failed: always include stderr in the message so the agent sees why
@@ -1466,20 +1685,10 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
                         let stdout = result.stdout.trim();
                         let mut msg = format!("Exit code: {}", result.exit_code.unwrap_or(-1));
                         if !stderr.is_empty() {
-                            let err_preview = if stderr.len() > 500 {
-                                format!("{}...", &stderr[..500])
-                            } else {
-                                stderr.to_string()
-                            };
-                            msg.push_str(&format!("\nstderr: {}", err_preview));
+                            msg.push_str(&format!("\nstderr: {}", crate::truncate_safe(stderr, 500)));
                         }
                         if !stdout.is_empty() && stderr.is_empty() {
-                            let out_preview = if stdout.len() > 500 {
-                                format!("{}...", &stdout[..500])
-                            } else {
-                                stdout.to_string()
-                            };
-                            msg.push_str(&format!("\nstdout: {}", out_preview));
+                            msg.push_str(&format!("\nstdout: {}", crate::truncate_safe(stdout, 500)));
                         }
                         msg
                     };
@@ -1564,6 +1773,46 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             }
         }
 
+        "create_markdown_skill" => {
+            let description = call.arguments["description"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'description' argument"))?;
+            let name = call.arguments["name"].as_str();
+            let category = call.arguments["category"].as_str();
+            let tags: Option<Vec<String>> = call.arguments.get("tags")
+                .and_then(|t| t.as_array())
+                .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect());
+
+            let generator = crate::skills::generator::SkillGenerator::new();
+            match generator.generate_markdown_skill(
+                description,
+                name,
+                category,
+                tags.as_deref(),
+            ).await {
+                Ok(skill) => {
+                    // Register the new skill in the registry
+                    let registry_skill = crate::skills::markdown_skill_to_registry_skill(skill.clone());
+                    let _ = crate::skills::default_registry().register(registry_skill);
+
+                    Ok(ToolResult {
+                        success: true,
+                        message: format!("Created markdown skill: {}", skill.frontmatter.name),
+                        data: Some(serde_json::json!({
+                            "skill_id": skill.id,
+                            "name": skill.frontmatter.name,
+                            "description": skill.frontmatter.description,
+                            "file_path": skill.file_path.display().to_string(),
+                        })),
+                    })
+                }
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Failed to create markdown skill: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
         "list_skills" => {
             execute_list_skills()
         }
@@ -1639,7 +1888,7 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             let action = crate::security::approval::Action {
                 id: uuid::Uuid::new_v4().to_string(),
                 action_type: crate::security::approval::ActionType::Custom("EditPersonality".to_string()),
-                description: format!("Edit personality field '{}': {}", field, &value[..value.len().min(50)]),
+                description: format!("Edit personality field '{}': {}", field, crate::truncate_safe(value, 50)),
                 risk_level: crate::security::approval::RiskLevel::High,
                 target: format!("personality.{}", field),
                 details: std::collections::HashMap::new(),
@@ -1657,6 +1906,25 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
                     data: None,
                 })
             }
+        }
+
+        "get_personality" => {
+            let personality = crate::soul::Personality::load().unwrap_or_default();
+            Ok(ToolResult {
+                success: true,
+                message: format!("Current personality: {}", personality.name),
+                data: Some(serde_json::json!({
+                    "name": personality.name,
+                    "traits": personality.traits,
+                    "greeting": personality.greeting,
+                    "farewell": personality.farewell,
+                    "style": {
+                        "formality": personality.style.formality,
+                        "length": personality.style.length,
+                        "emojis": personality.style.emojis,
+                    },
+                })),
+            })
         }
 
         "view_source" => {
@@ -1801,6 +2069,133 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
                 .ok_or_else(|| anyhow::anyhow!("Missing 'agent_type' argument"))?;
 
             execute_spawn_subagent(task, agent_type_str, ctx).await
+        }
+
+        // Browser automation tools (require Chrome/Chromium — Firefox does not support CDP)
+        "browser_navigate" => {
+            let url = call.arguments["url"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'url' argument"))?;
+            let session_id = call.arguments["session_id"].as_str().unwrap_or("default");
+
+            let effective_id = match ensure_browser_session(&ctx.browser, session_id).await {
+                Ok(id) => id,
+                Err(e) => return Ok(ToolResult {
+                    success: false,
+                    message: format!("Browser automation requires Chrome/Chromium (not Firefox). {}\n\
+                        Workaround: Use open_application to open a browser, then capture_screen + mouse/keyboard for interaction.", e),
+                    data: None,
+                }),
+            };
+
+            match ctx.browser.navigate(&effective_id, url).await {
+                Ok(result) => Ok(ToolResult {
+                    success: true,
+                    message: format!("Navigated to: {} (\"{}\" loaded in {}ms)", result.url, result.title, result.load_time_ms),
+                    data: Some(serde_json::json!({
+                        "url": result.url,
+                        "title": result.title,
+                        "load_time_ms": result.load_time_ms,
+                        "session_id": effective_id,
+                    })),
+                }),
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Navigation failed: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
+        "browser_snapshot" => {
+            let session_id = call.arguments["session_id"].as_str().unwrap_or("default");
+            let url = call.arguments["url"].as_str();
+
+            let effective_id = match ensure_browser_session(&ctx.browser, session_id).await {
+                Ok(id) => id,
+                Err(e) => return Ok(ToolResult {
+                    success: false,
+                    message: format!("Browser automation requires Chrome/Chromium (not Firefox). {}\n\
+                        Workaround: Use open_application to open a browser, then capture_screen to see the page.", e),
+                    data: None,
+                }),
+            };
+
+            // If a URL was provided, navigate first
+            if let Some(url) = url {
+                if let Err(e) = ctx.browser.navigate(&effective_id, url).await {
+                    tracing::warn!("browser_snapshot: auto-navigate to {} failed: {}", url, e);
+                }
+            }
+
+            match ctx.browser.snapshot(&effective_id).await {
+                Ok((snapshot, ref_map)) => {
+                    // Store ref_map for subsequent browser_act calls
+                    let mut refs = ctx.browser_refs.lock().await;
+                    refs.insert(session_id.to_string(), ref_map);
+
+                    Ok(ToolResult {
+                        success: true,
+                        message: format!("Accessibility snapshot: {} interactive elements", snapshot.element_count),
+                        data: Some(serde_json::json!({
+                            "url": snapshot.url,
+                            "title": snapshot.title,
+                            "tree": snapshot.tree_text,
+                            "element_count": snapshot.element_count,
+                            "session_id": effective_id,
+                        })),
+                    })
+                }
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Failed to get accessibility snapshot: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
+        "browser_act" => {
+            let session_id = call.arguments["session_id"].as_str().unwrap_or("default");
+            let ref_id = call.arguments["ref"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'ref' argument"))?;
+            let action = call.arguments["action"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'action' argument"))?;
+            let value = call.arguments["value"].as_str();
+
+            // Look up the ref map for this session
+            let refs = ctx.browser_refs.lock().await;
+            let ref_map = match refs.get(session_id) {
+                Some(rm) => rm.clone(),
+                None => {
+                    return Ok(ToolResult {
+                        success: false,
+                        message: "No ref map found for this session. Call browser_snapshot first.".to_string(),
+                        data: None,
+                    });
+                }
+            };
+            drop(refs);
+
+            let effective_id = match ensure_browser_session(&ctx.browser, session_id).await {
+                Ok(id) => id,
+                Err(e) => return Ok(ToolResult {
+                    success: false,
+                    message: format!("Browser automation requires Chrome/Chromium. {}", e),
+                    data: None,
+                }),
+            };
+
+            match ctx.browser.act(&effective_id, &ref_map, ref_id, action, value).await {
+                Ok(msg) => Ok(ToolResult {
+                    success: true,
+                    message: msg,
+                    data: None,
+                }),
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Browser action failed: {}", e),
+                    data: None,
+                }),
+            }
         }
 
         // Desktop control tools
@@ -2431,6 +2826,112 @@ async fn execute_tool_inner(call: &ToolCall, ctx: &ToolContext) -> anyhow::Resul
             }
         }
 
+        "remember_fact" => {
+            let fact = call.arguments["fact"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'fact' argument"))?;
+            let category = call.arguments["category"].as_str().unwrap_or("general");
+
+            match crate::learning::BootstrapContext::new() {
+                Ok(bootstrap) => {
+                    let entry = format!("- [{}] {}", category, fact);
+                    match bootstrap.append_to_file("MEMORY.md", &entry) {
+                        Ok(()) => Ok(ToolResult {
+                            success: true,
+                            message: format!("Remembered: {}", fact),
+                            data: None,
+                        }),
+                        Err(e) => Ok(ToolResult {
+                            success: false,
+                            message: format!("Failed to save to MEMORY.md: {}", e),
+                            data: None,
+                        }),
+                    }
+                }
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Bootstrap context unavailable: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
+        "forget_fact" => {
+            let fact = call.arguments["fact"].as_str()
+                .ok_or_else(|| anyhow::anyhow!("Missing 'fact' argument"))?;
+
+            match crate::learning::BootstrapContext::new() {
+                Ok(bootstrap) => {
+                    let path = bootstrap.file_path("MEMORY.md");
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        let lines: Vec<&str> = content.lines().collect();
+                        let fact_lower = fact.to_lowercase();
+                        let new_lines: Vec<&str> = lines.iter()
+                            .filter(|line| !line.to_lowercase().contains(&fact_lower))
+                            .copied()
+                            .collect();
+                        let removed = lines.len() - new_lines.len();
+                        if removed > 0 {
+                            let _ = std::fs::write(&path, new_lines.join("\n"));
+                            Ok(ToolResult {
+                                success: true,
+                                message: format!("Removed {} matching entries from MEMORY.md", removed),
+                                data: None,
+                            })
+                        } else {
+                            Ok(ToolResult {
+                                success: false,
+                                message: format!("No entries matching '{}' found in MEMORY.md", fact),
+                                data: None,
+                            })
+                        }
+                    } else {
+                        Ok(ToolResult {
+                            success: false,
+                            message: "MEMORY.md not found or unreadable".to_string(),
+                            data: None,
+                        })
+                    }
+                }
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Bootstrap context unavailable: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
+        "recall_memories" => {
+            match crate::learning::BootstrapContext::new() {
+                Ok(bootstrap) => {
+                    let path = bootstrap.file_path("MEMORY.md");
+                    let content = std::fs::read_to_string(&path)
+                        .unwrap_or_else(|_| "_No memories stored yet._".to_string());
+                    Ok(ToolResult {
+                        success: true,
+                        message: content,
+                        data: None,
+                    })
+                }
+                Err(e) => Ok(ToolResult {
+                    success: false,
+                    message: format!("Bootstrap context unavailable: {}", e),
+                    data: None,
+                }),
+            }
+        }
+
+        "wait" => {
+            let seconds = call.arguments["seconds"].as_f64().unwrap_or(1.0);
+            // Clamp to safe range
+            let seconds = seconds.max(0.1).min(5.0);
+            tokio::time::sleep(std::time::Duration::from_secs_f64(seconds)).await;
+            Ok(ToolResult {
+                success: true,
+                message: format!("Waited {:.1} seconds", seconds),
+                data: None,
+            })
+        }
+
         _ => Ok(ToolResult {
             success: false,
             message: format!("Unknown tool: {}", call.name),
@@ -2637,17 +3138,59 @@ fn execute_search_content(
     use std::fs;
     use std::path::Path;
 
-    let dir_path = Path::new(directory);
-    if !dir_path.exists() {
+    // Resolve "." to the project root so searches are scoped to the actual project,
+    // not whatever directory the CLI was launched from.
+    let resolved_dir = if directory == "." || directory.is_empty() {
+        find_project_root()
+    } else {
+        Path::new(directory).to_path_buf()
+    };
+
+    if !resolved_dir.exists() {
         return Ok(ToolResult {
             success: false,
-            message: format!("Directory does not exist: {}", directory),
+            message: format!("Directory does not exist: {}", resolved_dir.display()),
+            data: None,
+        });
+    }
+
+    // Guard against common English words that are almost certainly wrong patterns.
+    // e.g. user says "Find all TODO comments" and LLM passes pattern="all" instead of "TODO"
+    let common_words = [
+        "all", "the", "a", "an", "in", "on", "is", "it", "to", "for", "of",
+        "and", "or", "not", "this", "that", "with", "from", "each", "every",
+        "find", "search", "show", "get", "list", "count", "how", "what",
+        "where", "which", "many", "much", "do", "does", "are", "was", "were",
+        "be", "been", "have", "has", "had", "will", "would", "could", "should",
+    ];
+    let pattern_trimmed = pattern.trim().to_lowercase();
+    if common_words.contains(&pattern_trimmed.as_str()) {
+        return Ok(ToolResult {
+            success: false,
+            message: format!(
+                "Pattern '{}' is a common English word, not a code keyword. \
+                Use the actual text to search for, e.g. 'TODO', 'FIXME', 'fn main'. \
+                For 'Find all TODO comments' → use pattern='TODO'.",
+                pattern
+            ),
             data: None,
         });
     }
 
     let mut results = Vec::new();
     let pattern_lower = pattern.to_lowercase();
+
+    /// Directories to skip during recursive search
+    fn should_skip_dir(name: &str) -> bool {
+        name.starts_with('.')
+            || matches!(name,
+                "target" | "node_modules" | "vendor" | "dist" | "build"
+                | "__pycache__" | ".git" | "venv" | "env"
+                | "coverage" | ".next" | ".nuxt" | "out"
+            )
+            // Skip directories with spaces (likely not code directories)
+            || name.contains(' ')
+    }
 
     fn search_dir(
         dir: &Path,
@@ -2660,14 +3203,21 @@ fn execute_search_content(
             return Ok(());
         }
 
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()), // Skip unreadable directories
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let path = entry.path();
 
             if path.is_dir() {
-                // Skip hidden directories and common non-code directories
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with('.') || name == "target" || name == "node_modules" || name == "vendor" {
+                    if should_skip_dir(name) {
                         continue;
                     }
                 }
@@ -2679,6 +3229,17 @@ fn execute_search_content(
                         if !name.contains(fp.trim_start_matches('*').trim_end_matches('*')) {
                             continue;
                         }
+                    }
+                }
+
+                // Skip binary/large files by extension
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if matches!(ext, "png" | "jpg" | "jpeg" | "gif" | "ico" | "svg"
+                        | "woff" | "woff2" | "ttf" | "eot" | "otf"
+                        | "zip" | "tar" | "gz" | "bz2" | "xz"
+                        | "exe" | "dll" | "so" | "dylib" | "o" | "a"
+                        | "pdf" | "doc" | "docx" | "db" | "sqlite") {
+                        continue;
                     }
                 }
 
@@ -2702,14 +3263,15 @@ fn execute_search_content(
         Ok(())
     }
 
-    search_dir(dir_path, &pattern_lower, file_pattern, max_results, &mut results)?;
+    let display_dir = resolved_dir.display().to_string();
+    search_dir(&resolved_dir, &pattern_lower, file_pattern, max_results, &mut results)?;
 
     Ok(ToolResult {
         success: true,
-        message: format!("Found {} matches for '{}'", results.len(), pattern),
+        message: format!("Found {} matches for '{}' in {}", results.len(), pattern, display_dir),
         data: Some(serde_json::json!({
             "pattern": pattern,
-            "directory": directory,
+            "directory": display_dir,
             "matches": results,
             "count": results.len()
         })),
@@ -2726,11 +3288,17 @@ fn execute_find_files(
     use std::fs;
     use std::path::Path;
 
-    let dir_path = Path::new(directory);
-    if !dir_path.exists() {
+    // Resolve "." to the project root so searches are scoped to the actual project
+    let resolved_dir = if directory == "." || directory.is_empty() {
+        find_project_root()
+    } else {
+        Path::new(directory).to_path_buf()
+    };
+
+    if !resolved_dir.exists() {
         return Ok(ToolResult {
             success: false,
-            message: format!("Directory does not exist: {}", directory),
+            message: format!("Directory does not exist: {}", resolved_dir.display()),
             data: None,
         });
     }
@@ -2752,13 +3320,25 @@ fn execute_find_files(
             }
         }
 
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
+        let entries = match fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return Ok(()),
+        };
+
+        for entry in entries {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
             let path = entry.path();
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
-            // Skip hidden directories
-            if name.starts_with('.') {
+            // Skip hidden and non-code directories
+            if name.starts_with('.') || name.contains(' ')
+                || matches!(name, "target" | "node_modules" | "vendor" | "dist"
+                    | "build" | "__pycache__" | "venv" | "env"
+                    | "coverage" | ".next" | ".nuxt" | "out")
+            {
                 continue;
             }
 
@@ -2809,14 +3389,15 @@ fn execute_find_files(
         Ok(())
     }
 
-    find_in_dir(dir_path, &pattern_lower, file_type, 0, max_depth, &mut results)?;
+    let display_dir = resolved_dir.display().to_string();
+    find_in_dir(&resolved_dir, &pattern_lower, file_type, 0, max_depth, &mut results)?;
 
     Ok(ToolResult {
         success: true,
-        message: format!("Found {} items matching '{}'", results.len(), name_pattern),
+        message: format!("Found {} items matching '{}' in {}", results.len(), name_pattern, display_dir),
         data: Some(serde_json::json!({
             "pattern": name_pattern,
-            "directory": directory,
+            "directory": display_dir,
             "file_type": file_type,
             "results": results,
             "count": results.len()
@@ -2824,11 +3405,10 @@ fn execute_find_files(
     })
 }
 
-/// Get current working directory
+/// Get current working directory (returns project root when available)
 fn execute_get_cwd() -> anyhow::Result<ToolResult> {
-    let cwd = std::env::current_dir()
-        .map(|p| p.display().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+    let project_root = find_project_root();
+    let cwd = project_root.display().to_string();
 
     Ok(ToolResult {
         success: true,
@@ -2843,11 +3423,17 @@ fn execute_get_cwd() -> anyhow::Result<ToolResult> {
 fn execute_glob(directory: &str, pattern: &str) -> anyhow::Result<ToolResult> {
     use std::path::Path;
 
-    let base_path = Path::new(directory);
-    if !base_path.exists() {
+    // Resolve "." to the project root so globs are scoped to the actual project
+    let resolved_dir = if directory == "." || directory.is_empty() {
+        find_project_root()
+    } else {
+        Path::new(directory).to_path_buf()
+    };
+
+    if !resolved_dir.exists() {
         return Ok(ToolResult {
             success: false,
-            message: format!("Directory does not exist: {}", directory),
+            message: format!("Directory does not exist: {}", resolved_dir.display()),
             data: None,
         });
     }
@@ -2855,7 +3441,7 @@ fn execute_glob(directory: &str, pattern: &str) -> anyhow::Result<ToolResult> {
     let full_pattern = if pattern.starts_with('/') {
         pattern.to_string()
     } else {
-        format!("{}/{}", directory, pattern)
+        format!("{}/{}", resolved_dir.display(), pattern)
     };
 
     // Simple glob implementation
@@ -2918,7 +3504,7 @@ fn execute_glob(directory: &str, pattern: &str) -> anyhow::Result<ToolResult> {
         Ok(())
     }
 
-    if let Err(e) = walk_and_collect(base_path, &full_pattern, &mut results) {
+    if let Err(e) = walk_and_collect(&resolved_dir, &full_pattern, &mut results) {
         return Ok(ToolResult {
             success: false,
             message: format!("Glob error: {}", e),
@@ -2991,15 +3577,91 @@ fn execute_edit_personality(field: &str, value: &str) -> anyhow::Result<ToolResu
         });
     }
 
+    // Also sync changes to SOUL.md and MEMORY.md so they persist across sessions
+    if let Ok(bootstrap) = crate::learning::BootstrapContext::new() {
+        let soul_path = bootstrap.file_path("SOUL.md");
+        if let Ok(soul_content) = fs::read_to_string(&soul_path) {
+            let updated = match field {
+                "name" => {
+                    // Update "Name: ..." line in SOUL.md
+                    let mut lines: Vec<String> = soul_content.lines().map(String::from).collect();
+                    let mut found = false;
+                    for line in &mut lines {
+                        if line.starts_with("Name:") {
+                            *line = format!("Name: {}", value);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        // Add after "## Identity" if it exists
+                        let mut new_lines = Vec::new();
+                        for line in &lines {
+                            new_lines.push(line.clone());
+                            if line.contains("## Identity") {
+                                new_lines.push(String::new());
+                                new_lines.push(format!("Name: {}", value));
+                            }
+                        }
+                        lines = new_lines;
+                    }
+                    Some(lines.join("\n"))
+                }
+                "traits" => {
+                    // Update "Traits: ..." line in SOUL.md
+                    let mut lines: Vec<String> = soul_content.lines().map(String::from).collect();
+                    for line in &mut lines {
+                        if line.starts_with("Traits:") {
+                            *line = format!("Traits: {}", value);
+                            break;
+                        }
+                    }
+                    Some(lines.join("\n"))
+                }
+                _ => None,
+            };
+            if let Some(new_content) = updated {
+                let _ = fs::write(&soul_path, new_content);
+            }
+        }
+
+        // Save to MEMORY.md for extra persistence
+        let memory_entry = format!("- [personality] My {} is: {}", field, value);
+        let _ = bootstrap.append_to_file("MEMORY.md", &memory_entry);
+    }
+
     Ok(ToolResult {
         success: true,
-        message: format!("Updated personality field '{}' to: {}", field, value),
+        message: format!("Updated personality '{}' to '{}' (synced to personality file, SOUL.md, and MEMORY.md)", field, value),
         data: Some(serde_json::json!({
             "field": field,
             "value": value,
-            "path": personality_path.display().to_string()
+            "path": personality_path.display().to_string(),
+            "synced": ["personality.toml", "SOUL.md", "MEMORY.md"]
         })),
     })
+}
+
+/// Ensure a browser session exists, auto-creating one if needed.
+/// The LLM often passes session_id="default" — we map this to a persistent
+/// named session so it just works without manual session management.
+async fn ensure_browser_session(browser: &Arc<BrowserTool>, session_id: &str) -> anyhow::Result<String> {
+    // Check if a session with this ID already exists
+    if let Some(session) = browser.get_session(session_id).await {
+        // Verify the connection is still alive
+        if session.is_alive().await {
+            return Ok(session_id.to_string());
+        }
+        // Connection is dead — reconnect
+        tracing::warn!("Browser session '{}' has a dead connection, reconnecting", session_id);
+        browser.reconnect_named_session(session_id).await?;
+        return Ok(session_id.to_string());
+    }
+
+    // Auto-create a named session (launches Chrome with CDP)
+    tracing::info!("Auto-creating browser session '{}'", session_id);
+    browser.create_named_session(session_id).await?;
+    Ok(session_id.to_string())
 }
 
 /// Find the my-agent project root directory
@@ -3467,7 +4129,7 @@ async fn execute_spawn_subagent(task: &str, agent_type_str: &str, _ctx: &ToolCon
     let agent_type = SubagentType::from_capability(agent_type_str);
     let client = crate::agent::llm::OpenRouterClient::from_keyring()?;
     let config = crate::config::Config::load().unwrap_or_default();
-    let model = config.models.orchestrator.clone();
+    let model = agent_type.preferred_model(&config);
 
     let tool_ctx = ToolContext::with_project_paths();
     let allowed_tools = agent_type.filter_tools(builtin_tools());
@@ -3478,6 +4140,7 @@ async fn execute_spawn_subagent(task: &str, agent_type_str: &str, _ctx: &ToolCon
         allowed_tools,
         max_iterations: agent_type.max_iterations(),
         max_tokens: 4096,
+        timeout_secs: 600,
         on_tool_start: None,
         on_tool_complete: None,
         on_progress: None,

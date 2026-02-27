@@ -18,34 +18,49 @@ pub struct ContextConfig {
     pub warning_threshold: usize,
     /// Reserve tokens for response
     pub reserve_tokens: usize,
+    /// Token threshold at which to flush memories before compaction
+    pub memory_flush_threshold: usize,
 }
 
 impl Default for ContextConfig {
     fn default() -> Self {
+        let max_context_tokens = 100000;
         Self {
             model_context_limit: 120000,
-            max_context_tokens: 100000,
+            max_context_tokens,
             max_messages: 50,
             warning_threshold: 80000,
             reserve_tokens: 4096,
+            memory_flush_threshold: max_context_tokens.saturating_sub(10000),
         }
     }
 }
 
 /// Get context config appropriate for a model
 pub fn context_config_for_model(model: &str) -> ContextConfig {
-    let model_context_limit = if model.contains("gpt-4") || model.contains("claude") {
+    let model_lower = model.to_lowercase();
+    let model_context_limit = if model_lower.contains("claude-3.5")
+        || model_lower.contains("claude-4")
+        || model_lower.contains("claude-3-opus")
+    {
+        // Claude 3.5/4 models have 200K context
+        200000
+    } else if model_lower.contains("gpt-4") || model_lower.contains("claude") {
         128000
-    } else if model.contains("gpt-3.5") {
+    } else if model_lower.contains("gpt-3.5") {
         16000
     } else {
         120000
     };
 
+    // Use 88% of limit (was 85%) for more headroom
+    let max_context_tokens = (model_context_limit as f64 * 0.88) as usize;
+
     ContextConfig {
         model_context_limit,
-        max_context_tokens: (model_context_limit as f64 * 0.85) as usize,
+        max_context_tokens,
         warning_threshold: (model_context_limit as f64 * 0.7) as usize,
+        memory_flush_threshold: max_context_tokens.saturating_sub(10000),
         ..Default::default()
     }
 }
@@ -196,5 +211,77 @@ impl ContextManager {
     /// Get estimated token count
     pub fn estimated_tokens(&self) -> usize {
         self.estimated_tokens
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_context_config() {
+        let config = ContextConfig::default();
+        assert_eq!(config.model_context_limit, 120000);
+        assert_eq!(config.max_context_tokens, 100000);
+        assert_eq!(config.max_messages, 50);
+        assert_eq!(config.memory_flush_threshold, 90000); // 100000 - 10000
+    }
+
+    #[test]
+    fn test_context_config_for_gpt4() {
+        let config = context_config_for_model("gpt-4-turbo");
+        assert_eq!(config.model_context_limit, 128000);
+        // 88% of 128000 = 112640
+        assert_eq!(config.max_context_tokens, 112640);
+        assert_eq!(config.memory_flush_threshold, 102640); // 112640 - 10000
+    }
+
+    #[test]
+    fn test_context_config_for_claude_35() {
+        let config = context_config_for_model("claude-3.5-sonnet");
+        assert_eq!(config.model_context_limit, 200000);
+        // 88% of 200000 = 176000
+        assert_eq!(config.max_context_tokens, 176000);
+        assert_eq!(config.memory_flush_threshold, 166000); // 176000 - 10000
+    }
+
+    #[test]
+    fn test_context_config_for_claude_4() {
+        let config = context_config_for_model("claude-4-opus");
+        assert_eq!(config.model_context_limit, 200000);
+        assert_eq!(config.max_context_tokens, 176000);
+    }
+
+    #[test]
+    fn test_context_config_for_gpt35() {
+        let config = context_config_for_model("gpt-3.5-turbo");
+        assert_eq!(config.model_context_limit, 16000);
+        // 88% of 16000 = 14080
+        assert_eq!(config.max_context_tokens, 14080);
+    }
+
+    #[test]
+    fn test_context_config_for_unknown_model() {
+        let config = context_config_for_model("some-random-model");
+        assert_eq!(config.model_context_limit, 120000);
+    }
+
+    #[test]
+    fn test_memory_flush_threshold_below_max() {
+        // Flush threshold should always be below max context tokens
+        for model in &["gpt-4", "claude-3.5-sonnet", "claude-4-opus", "gpt-3.5-turbo", "unknown"] {
+            let config = context_config_for_model(model);
+            assert!(config.memory_flush_threshold < config.max_context_tokens,
+                "For model '{}': flush ({}) should be < max ({})",
+                model, config.memory_flush_threshold, config.max_context_tokens);
+        }
+    }
+
+    #[test]
+    fn test_estimate_str_tokens() {
+        // ~4 chars per token
+        assert_eq!(ContextManager::estimate_str_tokens(""), 0);
+        assert_eq!(ContextManager::estimate_str_tokens("test"), 1); // 4 chars = 1 token
+        assert_eq!(ContextManager::estimate_str_tokens("hello world!!"), 3); // 13 chars ~ 3 tokens
     }
 }

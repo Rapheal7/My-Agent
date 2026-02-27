@@ -57,6 +57,16 @@ impl BootstrapContext {
             }
         }
 
+        // Load daily logs for temporal context
+        if let Ok(log_mgr) = crate::memory::daily_log::DailyLogManager::new() {
+            let recent = log_mgr.load_recent_context();
+            if !recent.trim().is_empty() {
+                context.push_str("## Recent Activity (Daily Logs)\n\n");
+                context.push_str(recent.trim());
+                context.push_str("\n\n");
+            }
+        }
+
         if context.len() < 80 {
             // No meaningful content loaded
             return String::new();
@@ -110,6 +120,11 @@ impl BootstrapContext {
         std::fs::write(&path, new_content.trim_end())?;
         info!("Updated section '{}' in {}", section, filename);
         Ok(())
+    }
+
+    /// Get the full path to a bootstrap file
+    pub fn file_path(&self, filename: &str) -> PathBuf {
+        self.base_dir.join(filename)
     }
 
     /// Append content to a bootstrap file

@@ -266,7 +266,7 @@ impl TtsEngine {
             bail!("Cannot synthesize empty text");
         }
 
-        debug!("Synthesizing text: {}...", &text[..text.len().min(50)]);
+        debug!("Synthesizing text: {}", crate::truncate_safe(text, 50));
 
         #[cfg(feature = "coqui_tts")]
         {

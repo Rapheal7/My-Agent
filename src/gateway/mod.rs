@@ -1,8 +1,10 @@
 //! Gateway Daemon Mode - always-on service for receiving messages
 //!
-//! Integrates soul engine, web server, and messaging listeners
-//! into a unified daemon that can receive messages from CLI,
-//! messaging platforms, and web.
+//! Integrates soul engine, web server, messaging listeners, and
+//! cron heartbeat into a unified daemon that can receive messages
+//! from CLI, messaging platforms, and web.
+
+pub mod heartbeat;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -27,6 +29,12 @@ pub struct GatewayConfig {
     /// Auto-start soul engine
     #[serde(default = "default_true")]
     pub auto_start_soul: bool,
+    /// Enable cron heartbeat
+    #[serde(default)]
+    pub enable_heartbeat: bool,
+    /// Heartbeat configuration
+    #[serde(default)]
+    pub heartbeat: heartbeat::CronHeartbeatConfig,
 }
 
 fn default_port() -> u16 {
@@ -49,6 +57,8 @@ impl Default for GatewayConfig {
             enable_web: true,
             enable_messaging: false,
             auto_start_soul: true,
+            enable_heartbeat: false,
+            heartbeat: heartbeat::CronHeartbeatConfig::default(),
         }
     }
 }
@@ -160,6 +170,18 @@ impl Gateway {
                     _ = shutdown_rx.recv() => {
                         info!("Web server shutting down");
                     }
+                }
+            });
+        }
+
+        // Start heartbeat if enabled
+        if self.config.enable_heartbeat {
+            let heartbeat_config = self.config.heartbeat.clone();
+            let heartbeat_shutdown_rx = shutdown_tx.subscribe();
+            tokio::spawn(async move {
+                match heartbeat::CronHeartbeat::new(heartbeat_config) {
+                    Ok(mut hb) => hb.run(heartbeat_shutdown_rx).await,
+                    Err(e) => warn!("Failed to start heartbeat: {}", e),
                 }
             });
         }

@@ -411,7 +411,11 @@ impl EmbeddingModel {
         // Rough estimate: 4 chars per token
         let max_chars = self.config.max_length * 4;
         if text.len() > max_chars {
-            &text[..max_chars]
+            let mut end = max_chars;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            &text[..end]
         } else {
             text
         }

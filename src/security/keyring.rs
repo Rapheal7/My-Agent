@@ -190,6 +190,93 @@ pub fn has_hf_api_key() -> bool {
     false
 }
 
+// ============ NVIDIA NIM API Key Functions ============
+
+const NVIDIA_API_KEY_USERNAME: &str = "nvidia-api-key";
+const NVIDIA_API_KEY_FILE: &str = "nvidia_api_key.txt";
+
+/// Get the path for the NVIDIA API key file
+fn nvidia_api_key_file_path() -> Result<PathBuf> {
+    let base = directories::ProjectDirs::from("com", "my-agent", "my-agent")
+        .context("Failed to get project directories")?;
+    let dir = base.config_dir();
+    fs::create_dir_all(dir).context("Failed to create config directory")?;
+    Ok(dir.join(NVIDIA_API_KEY_FILE))
+}
+
+/// Set NVIDIA NIM API key
+pub fn set_nvidia_api_key(key: &str) -> Result<()> {
+    // Try keyring first
+    match keyring::Entry::new(SERVICE_NAME, NVIDIA_API_KEY_USERNAME) {
+        Ok(entry) => {
+            if entry.set_password(key).is_ok() {
+                return Ok(());
+            }
+        }
+        Err(_) => {}
+    }
+
+    // Fallback to file storage
+    let path = nvidia_api_key_file_path()?;
+    fs::write(&path, key).context("Failed to write NVIDIA API key file")?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+            .context("Failed to set file permissions")?;
+    }
+
+    Ok(())
+}
+
+/// Get NVIDIA NIM API key
+pub fn get_nvidia_api_key() -> Result<String> {
+    // Try keyring first
+    if let Ok(entry) = keyring::Entry::new(SERVICE_NAME, NVIDIA_API_KEY_USERNAME) {
+        if let Ok(key) = entry.get_password() {
+            return Ok(key);
+        }
+    }
+
+    // Fallback to file
+    let path = nvidia_api_key_file_path()?;
+    let key = fs::read_to_string(&path)
+        .context("Failed to read NVIDIA API key. Run 'my-agent config --set-nvidia-key YOUR_KEY' first.")?;
+    Ok(key.trim().to_string())
+}
+
+/// Delete NVIDIA NIM API key
+pub fn delete_nvidia_api_key() -> Result<()> {
+    if let Ok(entry) = keyring::Entry::new(SERVICE_NAME, NVIDIA_API_KEY_USERNAME) {
+        let _ = entry.delete_credential();
+    }
+
+    let path = nvidia_api_key_file_path()?;
+    if path.exists() {
+        fs::remove_file(&path).context("Failed to delete NVIDIA API key file")?;
+    }
+
+    Ok(())
+}
+
+/// Check if NVIDIA NIM API key is set
+pub fn has_nvidia_api_key() -> bool {
+    if let Ok(entry) = keyring::Entry::new(SERVICE_NAME, NVIDIA_API_KEY_USERNAME) {
+        if entry.get_password().is_ok() {
+            return true;
+        }
+    }
+
+    if let Ok(path) = nvidia_api_key_file_path() {
+        if path.exists() {
+            return true;
+        }
+    }
+
+    false
+}
+
 // ============ Server Password Functions ============
 
 const SERVER_PASSWORD_USERNAME: &str = "server-password-hash";

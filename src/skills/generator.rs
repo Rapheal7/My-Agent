@@ -55,12 +55,33 @@ pub struct SkillGenerator {
 }
 
 impl SkillGenerator {
-    /// Create a new skill generator
+    /// Create a new skill generator — uses code model from config, falls back to default model
     pub fn new() -> Self {
+        let model = Self::load_model_from_config();
         Self {
             api_key: None,
-            model: "z-ai/glm-5".to_string(),
+            model,
         }
+    }
+
+    /// Read the best available model from config for skill generation
+    fn load_model_from_config() -> String {
+        let config_path = dirs::config_dir()
+            .unwrap_or_default()
+            .join("my-agent")
+            .join("config.toml");
+        if let Ok(content) = std::fs::read_to_string(&config_path) {
+            if let Ok(val) = content.parse::<toml::Value>() {
+                // Prefer code model, then default model
+                if let Some(m) = val.get("models").and_then(|m| m.get("code")).and_then(|v| v.as_str()) {
+                    return m.to_string();
+                }
+                if let Some(m) = val.get("openrouter").and_then(|o| o.get("default_model")).and_then(|v| v.as_str()) {
+                    return m.to_string();
+                }
+            }
+        }
+        "anthropic/claude-3.5-sonnet".to_string()
     }
 
     /// Set API key
@@ -167,11 +188,11 @@ impl SkillGenerator {
         // Try to extract JSON from the response
         let json_str = if content.contains("```json") {
             let start = content.find("```json").unwrap() + 7;
-            let end = content[start..].find("```").unwrap() + start;
+            let end = content[start..].find("```").map(|i| i + start).unwrap_or(content.len());
             &content[start..end]
         } else if content.contains("```") {
             let start = content.find("```").unwrap() + 3;
-            let end = content[start..].find("```").unwrap() + start;
+            let end = content[start..].find("```").map(|i| i + start).unwrap_or(content.len());
             &content[start..end]
         } else {
             content
@@ -435,6 +456,115 @@ result
 
         Ok(skill)
     }
+
+    /// Generate a SKILL.md (markdown skill) from a description
+    pub async fn generate_markdown_skill(
+        &self,
+        description: &str,
+        name: Option<&str>,
+        category: Option<&str>,
+        tags: Option<&[String]>,
+    ) -> Result<super::markdown::MarkdownSkill> {
+        use super::markdown;
+
+        let api_key = self.api_key.clone().or_else(|| {
+            std::env::var("OPENROUTER_API_KEY").ok()
+        });
+
+        let inferred_name = description.split_whitespace().take(4).collect::<Vec<_>>().join(" ");
+        let skill_name = name.unwrap_or(&inferred_name);
+
+        let skill_id = skill_name.to_lowercase().replace(' ', "-");
+        let skill_category = category.unwrap_or("Utility");
+        let skill_tags = tags.map(|t| t.to_vec()).unwrap_or_default();
+
+        let md_content = if let Some(api_key) = api_key {
+            // Ask LLM to generate SKILL.md content
+            let client = reqwest::Client::new();
+            let response = client
+                .post("https://openrouter.ai/api/v1/chat/completions")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .header("Content-Type", "application/json")
+                .header("HTTP-Referer", "https://github.com/my-agent")
+                .json(&serde_json::json!({
+                    "model": self.model,
+                    "messages": [
+                        {"role": "system", "content": MARKDOWN_SKILL_PROMPT},
+                        {"role": "user", "content": format!(
+                            "Create a SKILL.md for:\nDescription: {}\nName: {}\nCategory: {}\nTags: {:?}",
+                            description, skill_name, skill_category, skill_tags
+                        )}
+                    ],
+                    "temperature": 0.7,
+                    "max_tokens": 2000
+                }))
+                .send()
+                .await;
+
+            match response {
+                Ok(resp) if resp.status().is_success() => {
+                    let body = resp.text().await?;
+                    let value: serde_json::Value = serde_json::from_str(&body)?;
+                    let content = value["choices"][0]["message"]["content"]
+                        .as_str()
+                        .unwrap_or("");
+
+                    // Extract the markdown content (strip code fences if present)
+                    let md = {
+                        let trimmed = content.trim();
+                        // Strip various code fence formats: ```markdown, ```yaml, ```
+                        let stripped = if let Some(rest) = trimmed.strip_prefix("```markdown") {
+                            rest
+                        } else if let Some(rest) = trimmed.strip_prefix("```yaml") {
+                            rest
+                        } else if let Some(rest) = trimmed.strip_prefix("```md") {
+                            rest
+                        } else if trimmed.starts_with("```") && trimmed.len() > 3 {
+                            &trimmed[3..]
+                        } else {
+                            trimmed
+                        };
+                        // Remove trailing fence
+                        let stripped = stripped.trim();
+                        if let Some(s) = stripped.strip_suffix("```") {
+                            s.trim().to_string()
+                        } else {
+                            stripped.to_string()
+                        }
+                    };
+
+                    // Validate it has frontmatter
+                    if md.starts_with("---") {
+                        md
+                    } else {
+                        // LLM didn't produce valid format, fallback to template
+                        markdown::generate_template(&skill_name, description)
+                    }
+                }
+                _ => {
+                    warn!("LLM markdown skill generation failed, using template");
+                    markdown::generate_template(&skill_name, description)
+                }
+            }
+        } else {
+            markdown::generate_template(&skill_name, description)
+        };
+
+        // Write to disk
+        let skills_dir = dirs::data_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("my-agent")
+            .join("skills");
+        std::fs::create_dir_all(&skills_dir)?;
+
+        let file_path = skills_dir.join(format!("{}.skill.md", skill_id));
+        std::fs::write(&file_path, &md_content)?;
+
+        info!("Generated markdown skill: {} at {}", skill_name, file_path.display());
+
+        // Parse and return
+        markdown::parse_skill_md(&file_path)
+    }
 }
 
 impl Default for SkillGenerator {
@@ -442,6 +572,54 @@ impl Default for SkillGenerator {
         Self::new()
     }
 }
+
+/// System prompt for SKILL.md generation
+const MARKDOWN_SKILL_PROMPT: &str = r#"You are a skill document generator for an AI coding assistant. Create a SKILL.md file that the AI agent reads and follows as instructions.
+
+CRITICAL RULES:
+- Output ONLY the SKILL.md content, nothing else. No explanation before or after.
+- Do NOT wrap the output in ```markdown``` or any code fences.
+- Start directly with --- (YAML frontmatter delimiter)
+- Do NOT use emoji characters anywhere in the output
+- Commands should use plain shell syntax without emoji
+
+Output format:
+---
+name: Skill Name
+description: One-line description of what the skill does
+version: 1.0.0
+author: ai-generated
+tags: [tag1, tag2]
+category: Category
+requires:
+  bins: [required_binary]
+parameters:
+  - name: param_name
+    param_type: String
+    required: false
+    default: "default_value"
+    description: What this parameter is for
+---
+# Skill Name
+
+## Steps
+
+1. First step with specific command: `command here`
+2. Second step
+3. Verify the result
+
+## Error Handling
+
+- If step 1 fails, try alternative approach
+- Common issues and solutions
+
+Categories: Filesystem, Shell, Web, Data, System, Utility
+Write clear, actionable steps that an AI agent can execute using its tools (execute_command, read_file, write_file, etc.).
+Use {{param_name}} for parameter placeholders.
+Include specific shell commands where relevant.
+Only list bins in requires if the skill absolutely needs them (e.g., git, docker).
+Omit the requires section entirely if no special binaries or env vars are needed.
+"#;
 
 /// System prompt for skill generation
 const SKILL_SYSTEM_PROMPT: &str = r#"You are a skill code generator for an AI agent system.

@@ -1,4 +1,4 @@
-//! OpenRouter LLM client with cost-optimized routing
+//! LLM client with multi-provider support (OpenRouter, NVIDIA NIM)
 
 use anyhow::{Result, Context, bail};
 use futures_util::StreamExt;
@@ -8,6 +8,57 @@ use serde_json::Value;
 use std::sync::Arc;
 
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
+const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+
+// ============ Provider Configuration ============
+
+/// Configuration for an LLM API provider
+#[derive(Debug, Clone)]
+pub struct ProviderConfig {
+    /// Base URL for the API (e.g., "https://openrouter.ai/api/v1")
+    pub base_url: String,
+    /// API key for authentication
+    pub api_key: String,
+    /// Extra headers to include in requests (e.g., X-Title, HTTP-Referer)
+    pub extra_headers: Vec<(String, String)>,
+    /// Whether to include `transforms: []` in requests (OpenRouter-specific)
+    pub include_transforms: bool,
+}
+
+impl ProviderConfig {
+    /// Create an OpenRouter provider configuration
+    pub fn openrouter(api_key: String) -> Self {
+        Self {
+            base_url: OPENROUTER_BASE_URL.to_string(),
+            api_key,
+            extra_headers: vec![
+                ("HTTP-Referer".to_string(), "https://github.com/secure-agent".to_string()),
+                ("X-Title".to_string(), "Secure Agent".to_string()),
+            ],
+            include_transforms: true,
+        }
+    }
+
+    /// Create an NVIDIA NIM provider configuration
+    pub fn nvidia_nim(api_key: String) -> Self {
+        Self {
+            base_url: NVIDIA_NIM_BASE_URL.to_string(),
+            api_key,
+            extra_headers: Vec::new(),
+            include_transforms: false,
+        }
+    }
+
+    /// Create an NVIDIA NIM provider with a custom base URL
+    pub fn nvidia_nim_with_url(api_key: String, base_url: String) -> Self {
+        Self {
+            base_url,
+            api_key,
+            extra_headers: Vec::new(),
+            include_transforms: false,
+        }
+    }
+}
 
 // ============ Multimodal Content Support ============
 
@@ -58,12 +109,15 @@ impl ContentPart {
     }
 }
 
-/// OpenRouter API client
+/// LLM API client (supports OpenRouter, NVIDIA NIM, and other OpenAI-compatible providers)
 #[derive(Clone)]
 pub struct OpenRouterClient {
     client: Arc<Client>,
-    api_key: String,
+    provider: ProviderConfig,
 }
+
+/// Type alias for future migration convenience
+pub type LLMClient = OpenRouterClient;
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
@@ -356,15 +410,24 @@ struct Delta {
 }
 
 impl OpenRouterClient {
-    /// Create a new OpenRouter client
+    /// Create a new OpenRouter client (backward compatible)
     pub fn new(api_key: String) -> Self {
+        let provider = ProviderConfig::openrouter(api_key);
         Self {
             client: Arc::new(Client::new()),
-            api_key,
+            provider,
         }
     }
 
-    /// Create client from keyring
+    /// Create a client with a specific provider configuration
+    pub fn with_provider(config: ProviderConfig) -> Self {
+        Self {
+            client: Arc::new(Client::new()),
+            provider: config,
+        }
+    }
+
+    /// Create client from keyring (uses OpenRouter by default)
     pub fn from_keyring() -> Result<Self> {
         let api_key = crate::security::keyring::get_api_key()?;
         Ok(Self::new(api_key))
@@ -373,6 +436,11 @@ impl OpenRouterClient {
     /// Create client from config (uses keyring for API key)
     pub fn from_config(_config: &crate::config::Config) -> Result<Self> {
         Self::from_keyring()
+    }
+
+    /// Get the provider configuration
+    pub fn provider(&self) -> &ProviderConfig {
+        &self.provider
     }
 
     /// Simple single-turn chat with default model
@@ -418,26 +486,27 @@ Be helpful, truthful, and concise in your responses."#;
             messages,
             max_tokens,
             stream: None,
-            // Disable prompt compression to prevent early stopping
-            transforms: Some(vec![]),
+            transforms: if self.provider.include_transforms { Some(vec![]) } else { None },
             tools: None,
             tool_choice: None,
         };
 
-        let response = self.client
-            .post(format!("{}/chat/completions", OPENROUTER_BASE_URL))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/secure-agent")
-            .header("X-Title", "Secure Agent")
+        let mut req_builder = self.client
+            .post(format!("{}/chat/completions", self.provider.base_url))
+            .header("Authorization", format!("Bearer {}", self.provider.api_key));
+        for (key, value) in &self.provider.extra_headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+        let response = req_builder
             .json(&request)
             .send()
             .await
-            .context("Failed to send request to OpenRouter")?;
+            .context("Failed to send request to LLM provider")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!("OpenRouter API error ({}): {}", status, body);
+            bail!("LLM API error ({}): {}", status, body);
         }
 
         // Parse response with better error handling
@@ -445,14 +514,14 @@ Be helpful, truthful, and concise in your responses."#;
 
         // Try to log the problematic response for debugging
         if std::env::var("DEBUG_LLM_RESPONSES").is_ok() {
-            eprintln!("DEBUG LLM Response:\n{}", &body[..body.len().min(2000)]);
+            eprintln!("DEBUG LLM Response:\n{}", crate::truncate_safe(&body, 2000));
         }
 
         // Parse as raw Value first for maximum flexibility
         let raw_response: serde_json::Value = serde_json::from_str(&body)
             .map_err(|e| {
                 anyhow::anyhow!("Failed to parse JSON response: {} (body: {})",
-                    e, &body[..body.len().min(500)])
+                    e, crate::truncate_safe(&body, 500))
             })?;
 
         // Extract content from the response using path navigation
@@ -497,25 +566,27 @@ Be helpful, truthful, and concise in your responses."#;
             messages,
             max_tokens,
             stream: Some(true),
-            transforms: Some(vec![]),
+            transforms: if self.provider.include_transforms { Some(vec![]) } else { None },
             tools: None,
             tool_choice: None,
         };
 
-        let response = self.client
-            .post(format!("{}/chat/completions", OPENROUTER_BASE_URL))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/secure-agent")
-            .header("X-Title", "Secure Agent")
+        let mut req_builder = self.client
+            .post(format!("{}/chat/completions", self.provider.base_url))
+            .header("Authorization", format!("Bearer {}", self.provider.api_key));
+        for (key, value) in &self.provider.extra_headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+        let response = req_builder
             .json(&request)
             .send()
             .await
-            .context("Failed to send streaming request to OpenRouter")?;
+            .context("Failed to send streaming request to LLM provider")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!("OpenRouter streaming API error ({}): {}", status, body);
+            bail!("LLM streaming API error ({}): {}", status, body);
         }
 
         // Use bytes_stream for SSE parsing
@@ -568,26 +639,27 @@ Be helpful, truthful, and concise in your responses."#;
             messages,
             max_tokens,
             stream: None,
-            // Disable prompt compression to prevent early stopping
-            transforms: Some(vec![]),
+            transforms: if self.provider.include_transforms { Some(vec![]) } else { None },
             tools: None,
             tool_choice: None,
         };
 
-        let response = self.client
-            .post(format!("{}/chat/completions", OPENROUTER_BASE_URL))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/secure-agent")
-            .header("X-Title", "Secure Agent")
+        let mut req_builder = self.client
+            .post(format!("{}/chat/completions", self.provider.base_url))
+            .header("Authorization", format!("Bearer {}", self.provider.api_key));
+        for (key, value) in &self.provider.extra_headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+        let response = req_builder
             .json(&request)
             .send()
             .await
-            .context("Failed to send request to OpenRouter")?;
+            .context("Failed to send request to LLM provider")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!("OpenRouter API error ({}): {}", status, body);
+            bail!("LLM API error ({}): {}", status, body);
         }
 
         // Parse as raw Value first for maximum flexibility
@@ -673,25 +745,27 @@ Be helpful, truthful, and concise in your responses."#;
             messages,
             max_tokens,
             stream: None,
-            transforms: Some(vec![]),
+            transforms: if self.provider.include_transforms { Some(vec![]) } else { None },
             tools: Some(tools),
             tool_choice: Some("auto".to_string()),
         };
 
-        let response = self.client
-            .post(format!("{}/chat/completions", OPENROUTER_BASE_URL))
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/secure-agent")
-            .header("X-Title", "Secure Agent")
+        let mut req_builder = self.client
+            .post(format!("{}/chat/completions", self.provider.base_url))
+            .header("Authorization", format!("Bearer {}", self.provider.api_key));
+        for (key, value) in &self.provider.extra_headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+        let response = req_builder
             .json(&request)
             .send()
             .await
-            .context("Failed to send request to OpenRouter")?;
+            .context("Failed to send request to LLM provider")?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            bail!("OpenRouter API error ({}): {}", status, body);
+            bail!("LLM API error ({}): {}", status, body);
         }
 
         // Parse as raw Value first for maximum provider compatibility.
@@ -794,9 +868,13 @@ Be helpful, truthful, and concise in your responses."#;
 
     /// List available models
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>> {
-        let response = self.client
-            .get(format!("{}/models", OPENROUTER_BASE_URL))
-            .header("Authorization", format!("Bearer {}", self.api_key))
+        let mut req_builder = self.client
+            .get(format!("{}/models", self.provider.base_url))
+            .header("Authorization", format!("Bearer {}", self.provider.api_key));
+        for (key, value) in &self.provider.extra_headers {
+            req_builder = req_builder.header(key.as_str(), value.as_str());
+        }
+        let response = req_builder
             .send()
             .await
             .context("Failed to fetch models")?;
@@ -815,8 +893,30 @@ Be helpful, truthful, and concise in your responses."#;
     }
 }
 
+/// Resolve the correct LLM client for a given model ID.
+///
+/// Checks the configured NVIDIA NIM model prefixes (from config.toml `[nvidia]`)
+/// and returns a NIM-configured client if the model matches. Otherwise returns
+/// an OpenRouter client.
+pub fn client_for_model(model: &str) -> Result<OpenRouterClient> {
+    let config = crate::config::Config::load()?;
+
+    // Check if the model matches any NVIDIA NIM prefix
+    let is_nim = config.nvidia.model_prefixes.iter().any(|prefix| model.starts_with(prefix.as_str()));
+
+    if is_nim {
+        let api_key = crate::security::keyring::get_nvidia_api_key()
+            .context("NVIDIA NIM API key not set. Run 'my-agent config --set-nvidia-key YOUR_KEY' first.")?;
+        let provider = ProviderConfig::nvidia_nim_with_url(api_key, config.nvidia.base_url);
+        Ok(OpenRouterClient::with_provider(provider))
+    } else {
+        OpenRouterClient::from_keyring()
+    }
+}
+
 /// Models that support vision/images
 pub const VISION_MODELS: &[&str] = &[
+    "bytedance-seed/seed-1.6-flash",
     "google/gemini-flash-1.5",
     "google/gemini-pro-1.5",
     "openai/gpt-4o",

@@ -59,7 +59,7 @@ impl Default for BrowserConfig {
     fn default() -> Self {
         Self {
             chrome_path: None,
-            headless: true,
+            headless: false,
             window_width: 1920,
             window_height: 1080,
             load_timeout_secs: 30,
@@ -149,6 +149,19 @@ impl BrowserSession {
         *last = Instant::now();
     }
 
+    /// Check if the CDP connection is still alive
+    pub async fn is_alive(&self) -> bool {
+        if let Some(client) = &self.cdp_client {
+            let mut client = client.lock().await;
+            // Send a lightweight CDP command to check the connection
+            client.send_command_to_session("Runtime.evaluate", serde_json::json!({
+                "expression": "1"
+            })).await.is_ok()
+        } else {
+            false
+        }
+    }
+
     /// Navigate to a URL
     pub async fn navigate(&self, url: &str) -> Result<NavigationResult> {
         self.update_activity().await;
@@ -159,7 +172,7 @@ impl BrowserSession {
         info!("Navigating session {} to: {}", self.id, url);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
             let result = client.navigate(&url).await?;
 
             Ok(NavigationResult {
@@ -179,7 +192,7 @@ impl BrowserSession {
         info!("Taking screenshot in session {}", self.id);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
             let data = client.capture_screenshot(options).await?;
 
             Ok(ScreenshotResult {
@@ -201,7 +214,7 @@ impl BrowserSession {
         info!("Executing script in session {}", self.id);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             // Apply timeout
             let timeout_duration = Duration::from_secs(self.config.script_timeout_secs);
@@ -228,7 +241,7 @@ impl BrowserSession {
         info!("Filling form field '{}' in session {}", selector, self.id);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             // Check if element exists
             let exists = client.evaluate(&format!(
@@ -286,7 +299,7 @@ impl BrowserSession {
         info!("Clicking element '{}' in session {}", selector, self.id);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             let result = client.evaluate(&format!(
                 "(function() {{
@@ -315,7 +328,7 @@ impl BrowserSession {
         info!("Extracting text from session {}", self.id);
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             let result = client.evaluate(
                 "document.body.innerText || document.body.textContent || ''"
@@ -332,7 +345,7 @@ impl BrowserSession {
         self.update_activity().await;
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             let result = client.evaluate(
                 "document.documentElement.outerHTML"
@@ -349,7 +362,7 @@ impl BrowserSession {
         self.update_activity().await;
 
         if let Some(client) = &self.cdp_client {
-            let client = client.lock().await;
+            let mut client = client.lock().await;
 
             let result = client.evaluate("window.location.href").await?;
 
@@ -394,7 +407,7 @@ struct CdpClient {
 impl CdpClient {
     /// Create a new CDP client and launch Chrome
     async fn new(config: &BrowserConfig) -> Result<Self> {
-        // Find Chrome executable
+        // Find Chrome/Chromium executable
         let chrome_path = find_chrome(&config.chrome_path)?;
         info!("Using Chrome: {}", chrome_path);
 
@@ -404,7 +417,7 @@ impl CdpClient {
         // Launch Chrome with remote debugging
         let mut cmd = tokio::process::Command::new(&chrome_path);
         cmd.arg(format!("--remote-debugging-port={}", port))
-            .arg(format!("--window-size={}, {}", config.window_width, config.window_height))
+            .arg(format!("--window-size={},{}", config.window_width, config.window_height))
             .arg("--no-first-run")
             .arg("--no-default-browser-check")
             .arg("--disable-default-apps")
@@ -413,9 +426,7 @@ impl CdpClient {
             .arg("--disable-renderer-backgrounding")
             .arg("--disable-backgrounding-occluded-windows")
             .arg("--disable-features=IsolateOrigins,site-per-process")
-            .arg("--disable-blink-features=AutomationControlled")
-            .arg("--disable-web-security") // For CORS bypass in testing
-            .arg("--allow-running-insecure-content"); // Allow mixed content
+            .arg("--disable-blink-features=AutomationControlled");
 
         if config.headless {
             cmd.arg("--headless=new");
@@ -433,12 +444,16 @@ impl CdpClient {
         let temp_dir = std::env::temp_dir().join(format!("chrome-profile-{}", Uuid::new_v4()));
         cmd.arg(format!("--user-data-dir={}", temp_dir.display()));
 
-        // Start Chrome
-        let mut chrome_process = cmd.spawn()
-            .context("Failed to launch Chrome")?;
+        // Suppress browser stdout/stderr noise
+        cmd.stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
 
-        // Wait for Chrome to start
-        tokio::time::sleep(Duration::from_millis(1000)).await;
+        // Start Chrome
+        let chrome_process = cmd.spawn()
+            .with_context(|| format!("Failed to launch Chrome: {}", chrome_path))?;
+
+        // Brief wait before polling CDP endpoint (the ws polling loop handles the real wait)
+        tokio::time::sleep(Duration::from_millis(200)).await;
 
         // Connect to Chrome DevTools Protocol
         let ws_url = wait_for_chrome_ws_url(port).await?;
@@ -524,46 +539,87 @@ impl CdpClient {
         }
     }
 
-    /// Send a command to the attached session
+    /// Send a command to the attached session (flat protocol — include sessionId directly)
     async fn send_command_to_session(&mut self, method: &str, params: serde_json::Value) -> Result<serde_json::Value> {
-        self.send_command("Target.sendMessageToTarget", serde_json::json!({
-            "targetId": self.target_id,
-            "message": serde_json::json!({
-                "id": self.message_id + 1,
-                "method": method,
-                "params": params
-            }).to_string()
-        })).await
+        self.message_id += 1;
+        let id = self.message_id;
+
+        let message = serde_json::json!({
+            "id": id,
+            "method": method,
+            "params": params,
+            "sessionId": self.session_id
+        });
+
+        debug!("CDP Session Command: {}", message);
+
+        self.ws_stream.send(tokio_tungstenite::tungstenite::Message::Text(
+            message.to_string().into()
+        )).await?;
+
+        // Wait for response
+        loop {
+            let msg = self.ws_stream.next().await
+                .context("WebSocket closed unexpectedly")??;
+
+            if let tokio_tungstenite::tungstenite::Message::Text(text) = msg {
+                let response: serde_json::Value = serde_json::from_str(&text)?;
+
+                if response.get("id").and_then(|v| v.as_u64()) == Some(id as u64) {
+                    if let Some(error) = response.get("error") {
+                        bail!("CDP error: {}", error);
+                    }
+                    return Ok(response.get("result").cloned().unwrap_or(serde_json::Value::Null));
+                }
+                // Skip events and other messages
+            }
+        }
     }
 
-    /// Navigate to a URL
-    async fn navigate(&self, url: &str) -> Result<NavigateResult> {
-        // This is a simplified implementation
-        // In production, you'd use the actual CDP Page.navigate command
-
+    /// Navigate to a URL using Page.navigate CDP command
+    async fn navigate(&mut self, url: &str) -> Result<NavigateResult> {
         let start = Instant::now();
 
-        // For now, use the script execution to navigate
-        let script = format!(
-            "window.location.href = '{}'",
-            escape_js_string(url)
-        );
+        // Use Page.navigate via the session
+        self.send_command_to_session("Page.navigate", serde_json::json!({
+            "url": url
+        })).await?;
 
-        // This would actually use CDP Page.navigate
-        // For this implementation, we'll simulate it
+        // Poll document.readyState instead of sleeping a fixed 2s
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if Instant::now() > deadline {
+                break; // Proceed anyway after 10s
+            }
+            let state = self.send_command_to_session("Runtime.evaluate", serde_json::json!({
+                "expression": "document.readyState"
+            })).await;
+            if let Ok(val) = state {
+                let ready = val["result"]["value"].as_str().unwrap_or("");
+                if ready == "complete" || ready == "interactive" {
+                    break;
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+
+        // Get the actual page URL and title in one eval
+        let eval = self.send_command_to_session("Runtime.evaluate", serde_json::json!({
+            "expression": "JSON.stringify({url: document.URL, title: document.title})",
+            "returnByValue": true
+        })).await?;
+        let json_str = eval["result"]["value"].as_str().unwrap_or("{}");
+        let info: serde_json::Value = serde_json::from_str(json_str).unwrap_or_default();
 
         Ok(NavigateResult {
-            url: url.to_string(),
-            title: "Page".to_string(), // Would get from Page.getDocumentTitle
+            url: info["url"].as_str().unwrap_or(url).to_string(),
+            title: info["title"].as_str().unwrap_or("").to_string(),
             load_time_ms: start.elapsed().as_millis() as u64,
         })
     }
 
-    /// Capture screenshot
-    async fn capture_screenshot(&self, options: ScreenshotOptions) -> Result<Vec<u8>> {
-        // In production, this would use CDP Page.captureScreenshot
-        // For now, return placeholder
-
+    /// Capture screenshot via CDP Page.captureScreenshot
+    async fn capture_screenshot(&mut self, options: ScreenshotOptions) -> Result<Vec<u8>> {
         let format = match options.format {
             ScreenshotFormat::Png => "png",
             ScreenshotFormat::Jpeg => "jpeg",
@@ -572,19 +628,36 @@ impl CdpClient {
 
         debug!("Capturing screenshot in {} format", format);
 
-        // Placeholder - in production would call Page.captureScreenshot
-        // and decode the base64 response
-        Ok(vec![])
+        let result = self.send_command_to_session("Page.captureScreenshot", serde_json::json!({
+            "format": format
+        })).await?;
+
+        let data_b64 = result["data"].as_str()
+            .context("No screenshot data in CDP response")?;
+
+        use base64::Engine;
+        let bytes = base64::engine::general_purpose::STANDARD.decode(data_b64)
+            .context("Failed to decode screenshot base64")?;
+
+        Ok(bytes)
     }
 
-    /// Evaluate JavaScript
-    async fn evaluate(&self, script: &str) -> Result<EvaluateResult> {
-        // In production, this would use CDP Runtime.evaluate
+    /// Evaluate JavaScript via CDP Runtime.evaluate
+    async fn evaluate(&mut self, script: &str) -> Result<EvaluateResult> {
         let start = Instant::now();
 
-        // Placeholder implementation
+        let result = self.send_command_to_session("Runtime.evaluate", serde_json::json!({
+            "expression": script,
+            "returnByValue": true
+        })).await?;
+
+        let value = result.get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+
         Ok(EvaluateResult {
-            value: serde_json::Value::Null,
+            value,
             execution_time_ms: start.elapsed().as_millis() as u64,
         })
     }
@@ -611,7 +684,7 @@ fn find_chrome(custom_path: &Option<String>) -> Result<String> {
         }
     }
 
-    // Check common locations
+    // Check common Chrome/Chromium locations
     let candidates = vec![
         // Linux
         "/usr/bin/google-chrome",
@@ -627,26 +700,32 @@ fn find_chrome(custom_path: &Option<String>) -> Result<String> {
         "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
     ];
 
-    for path in candidates {
+    for path in &candidates {
         if std::path::Path::new(path).exists() {
             return Ok(path.to_string());
         }
     }
 
-    // Try which command
-    if let Ok(output) = std::process::Command::new("which")
-        .args(&["google-chrome", "chromium", "chromium-browser"])
-        .output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout);
-            let path = path.lines().next().unwrap_or("").trim();
-            if !path.is_empty() {
-                return Ok(path.to_string());
+    // Try `which` for various Chrome names
+    for name in &["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"] {
+        if let Ok(output) = std::process::Command::new("which").arg(name).output() {
+            if output.status.success() {
+                let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                if !path.is_empty() {
+                    return Ok(path);
+                }
             }
         }
     }
 
-    bail!("Could not find Chrome/Chromium. Please install it or specify the path in config.")
+    bail!(
+        "Chrome or Chromium is required for browser automation (CDP). Firefox does not support the Chrome DevTools Protocol.\n\
+        Install one of these:\n\
+        - Ubuntu/Debian: sudo apt install chromium-browser  OR  sudo snap install chromium\n\
+        - Fedora: sudo dnf install chromium\n\
+        - macOS: brew install --cask google-chrome\n\
+        - Or download from: https://www.google.com/chrome/"
+    )
 }
 
 /// Find an available port for Chrome debugging
@@ -660,11 +739,12 @@ async fn find_available_port() -> Result<u16> {
 /// Wait for Chrome to start and get WebSocket URL
 async fn wait_for_chrome_ws_url(port: u16) -> Result<String> {
     let start = Instant::now();
-    let timeout = Duration::from_secs(30);
+    // Short timeout — if Chrome doesn't start in 10s, it won't
+    let timeout_dur = Duration::from_secs(10);
 
     loop {
-        if start.elapsed() > timeout {
-            bail!("Timeout waiting for Chrome to start");
+        if start.elapsed() > timeout_dur {
+            bail!("Timeout waiting for Chrome to start on port {}. Is Chrome/Chromium installed?", port);
         }
 
         match reqwest::get(format!("http://127.0.0.1:{}/json/version", port)).await {
@@ -677,7 +757,7 @@ async fn wait_for_chrome_ws_url(port: u16) -> Result<String> {
                 }
             }
             Err(_) => {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                tokio::time::sleep(Duration::from_millis(200)).await;
             }
         }
     }
@@ -924,6 +1004,294 @@ mod base64_serde {
     }
 }
 
+/// An accessibility tree node with an optional ref ID for interactive elements
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AXNode {
+    /// Reference ID (e.g., "@e1") — only for interactive elements
+    pub ref_id: Option<String>,
+    /// ARIA role
+    pub role: String,
+    /// Accessible name
+    pub name: String,
+    /// Whether the element is focused
+    pub focused: bool,
+    /// Current value (for inputs, selects, etc.)
+    pub value: Option<String>,
+    /// CDP backend node ID for resolving to DOM
+    pub backend_node_id: Option<i64>,
+}
+
+/// Accessibility tree snapshot result
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AXSnapshot {
+    /// Current page URL
+    pub url: String,
+    /// Page title
+    pub title: String,
+    /// Compact text representation of the accessibility tree
+    pub tree_text: String,
+    /// Number of interactive elements with refs
+    pub element_count: usize,
+}
+
+/// Map from ref IDs (@e1, @e2, ...) to backend node IDs
+#[derive(Debug, Clone, Default)]
+pub struct RefMap {
+    pub refs: HashMap<String, i64>,
+}
+
+/// Interactive ARIA roles that get ref IDs
+const INTERACTIVE_ROLES: &[&str] = &[
+    "button", "link", "textbox", "checkbox", "radio", "combobox",
+    "listbox", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "option", "searchbox", "slider", "spinbutton", "switch",
+    "tab", "treeitem", "gridcell",
+];
+
+impl BrowserSession {
+    /// Get an accessibility tree snapshot with ref IDs for interactive elements
+    pub async fn accessibility_snapshot(&self) -> Result<(AXSnapshot, RefMap)> {
+        self.update_activity().await;
+
+        info!("Getting accessibility snapshot for session {}", self.id);
+
+        if let Some(client) = &self.cdp_client {
+            let mut client = client.lock().await;
+
+            // Enable Accessibility domain
+            let _ = client.send_command_to_session("Accessibility.enable", serde_json::json!({})).await;
+
+            // Get the full accessibility tree
+            let ax_result = client.send_command_to_session(
+                "Accessibility.getFullAXTree",
+                serde_json::json!({})
+            ).await?;
+
+            // Get current URL and title
+            let url = client.evaluate("window.location.href").await
+                .map(|r| r.value.as_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+            let title = client.evaluate("document.title").await
+                .map(|r| r.value.as_str().unwrap_or("").to_string())
+                .unwrap_or_default();
+
+            // Parse the AX tree nodes
+            let nodes = ax_result.get("nodes")
+                .and_then(|n| n.as_array())
+                .cloned()
+                .unwrap_or_default();
+
+            let mut tree_lines = Vec::new();
+            let mut ref_map = RefMap::default();
+            let mut ref_counter = 0usize;
+
+            for node in &nodes {
+                let role = node.get("role")
+                    .and_then(|r| r.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                // Skip generic/invisible roles
+                if role.is_empty() || role == "none" || role == "generic" || role == "Ignored" {
+                    continue;
+                }
+
+                let name = node.get("name")
+                    .and_then(|n| n.get("value"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+
+                let value = node.get("value")
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+
+                let backend_node_id = node.get("backendDOMNodeId")
+                    .and_then(|v| v.as_i64());
+
+                let is_interactive = INTERACTIVE_ROLES.contains(&role.to_lowercase().as_str());
+
+                if is_interactive && backend_node_id.is_some() {
+                    ref_counter += 1;
+                    let ref_id = format!("@e{}", ref_counter);
+                    ref_map.refs.insert(ref_id.clone(), backend_node_id.unwrap());
+
+                    let mut line = format!("[{}] {} \"{}\"", ref_id, role, name);
+                    if let Some(ref val) = value {
+                        if !val.is_empty() {
+                            line.push_str(&format!(" value=\"{}\"", val));
+                        }
+                    }
+                    tree_lines.push(line);
+                } else if !name.is_empty() {
+                    // Non-interactive elements with names for context (headings, text, etc.)
+                    tree_lines.push(format!("{}: {}", role, name));
+                }
+            }
+
+            let tree_text = tree_lines.join("\n");
+            let element_count = ref_counter;
+
+            Ok((AXSnapshot { url, title, tree_text, element_count }, ref_map))
+        } else {
+            bail!("Browser session not initialized")
+        }
+    }
+
+    /// Act on an element identified by its ref ID from a snapshot
+    pub async fn act_on_element(
+        &self,
+        ref_map: &RefMap,
+        ref_id: &str,
+        action: &str,
+        value: Option<&str>,
+    ) -> Result<String> {
+        self.update_activity().await;
+
+        let backend_node_id = ref_map.refs.get(ref_id)
+            .ok_or_else(|| anyhow::anyhow!("Ref ID not found: {}. Take a new browser_snapshot first.", ref_id))?;
+
+        info!("Acting on {} (backend_node_id={}) action={}", ref_id, backend_node_id, action);
+
+        if let Some(client) = &self.cdp_client {
+            let mut client = client.lock().await;
+
+            // Resolve backendNodeId → objectId via DOM.resolveNode
+            let resolve_result = client.send_command_to_session(
+                "DOM.resolveNode",
+                serde_json::json!({ "backendNodeId": backend_node_id })
+            ).await?;
+
+            let object_id = resolve_result
+                .get("object")
+                .and_then(|o| o.get("objectId"))
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| anyhow::anyhow!("Could not resolve DOM node for {}", ref_id))?
+                .to_string();
+
+            match action {
+                "click" => {
+                    // Get box model to compute center coordinates
+                    let box_result = client.send_command_to_session(
+                        "DOM.getBoxModel",
+                        serde_json::json!({ "backendNodeId": backend_node_id })
+                    ).await?;
+
+                    let content = box_result.get("model")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .ok_or_else(|| anyhow::anyhow!("Could not get box model for {}", ref_id))?;
+
+                    // content quad is [x1,y1, x2,y2, x3,y3, x4,y4]
+                    if content.len() >= 4 {
+                        let x1 = content[0].as_f64().unwrap_or(0.0);
+                        let y1 = content[1].as_f64().unwrap_or(0.0);
+                        let x3 = content[4].as_f64().unwrap_or(0.0);
+                        let y3 = content[5].as_f64().unwrap_or(0.0);
+                        let cx = (x1 + x3) / 2.0;
+                        let cy = (y1 + y3) / 2.0;
+
+                        // mousePressed + mouseReleased
+                        client.send_command_to_session("Input.dispatchMouseEvent", serde_json::json!({
+                            "type": "mousePressed",
+                            "x": cx, "y": cy,
+                            "button": "left",
+                            "clickCount": 1
+                        })).await?;
+                        client.send_command_to_session("Input.dispatchMouseEvent", serde_json::json!({
+                            "type": "mouseReleased",
+                            "x": cx, "y": cy,
+                            "button": "left",
+                            "clickCount": 1
+                        })).await?;
+
+                        Ok(format!("Clicked {} at ({:.0}, {:.0})", ref_id, cx, cy))
+                    } else {
+                        bail!("Invalid box model for {}", ref_id)
+                    }
+                }
+
+                "type" => {
+                    let text = value.ok_or_else(|| anyhow::anyhow!("'type' action requires a 'value'"))?;
+
+                    // Focus the element
+                    client.send_command_to_session("DOM.focus", serde_json::json!({
+                        "backendNodeId": backend_node_id
+                    })).await?;
+
+                    // Insert text in a single CDP call (much faster than per-character keyDown/keyUp)
+                    client.send_command_to_session("Input.insertText", serde_json::json!({
+                        "text": text
+                    })).await?;
+
+                    Ok(format!("Typed \"{}\" into {}", text, ref_id))
+                }
+
+                "select" => {
+                    let val = value.ok_or_else(|| anyhow::anyhow!("'select' action requires a 'value'"))?;
+
+                    // Use JS to set value and dispatch change event
+                    let script = format!(
+                        "(function(el) {{ el.value = '{}'; el.dispatchEvent(new Event('change', {{bubbles: true}})); return 'ok'; }})(this)",
+                        escape_js_string(val)
+                    );
+                    client.send_command_to_session("Runtime.callFunctionOn", serde_json::json!({
+                        "objectId": object_id,
+                        "functionDeclaration": format!(
+                            "function() {{ this.value = '{}'; this.dispatchEvent(new Event('change', {{bubbles: true}})); return 'ok'; }}",
+                            escape_js_string(val)
+                        ),
+                        "returnByValue": true
+                    })).await?;
+
+                    Ok(format!("Selected \"{}\" on {}", val, ref_id))
+                }
+
+                "hover" => {
+                    let box_result = client.send_command_to_session(
+                        "DOM.getBoxModel",
+                        serde_json::json!({ "backendNodeId": backend_node_id })
+                    ).await?;
+
+                    let content = box_result.get("model")
+                        .and_then(|m| m.get("content"))
+                        .and_then(|c| c.as_array())
+                        .ok_or_else(|| anyhow::anyhow!("Could not get box model for {}", ref_id))?;
+
+                    if content.len() >= 4 {
+                        let x1 = content[0].as_f64().unwrap_or(0.0);
+                        let y1 = content[1].as_f64().unwrap_or(0.0);
+                        let x3 = content[4].as_f64().unwrap_or(0.0);
+                        let y3 = content[5].as_f64().unwrap_or(0.0);
+                        let cx = (x1 + x3) / 2.0;
+                        let cy = (y1 + y3) / 2.0;
+
+                        client.send_command_to_session("Input.dispatchMouseEvent", serde_json::json!({
+                            "type": "mouseMoved",
+                            "x": cx, "y": cy
+                        })).await?;
+
+                        Ok(format!("Hovered over {} at ({:.0}, {:.0})", ref_id, cx, cy))
+                    } else {
+                        bail!("Invalid box model for {}", ref_id)
+                    }
+                }
+
+                "focus" => {
+                    client.send_command_to_session("DOM.focus", serde_json::json!({
+                        "backendNodeId": backend_node_id
+                    })).await?;
+                    Ok(format!("Focused {}", ref_id))
+                }
+
+                _ => bail!("Unknown action: {}. Supported: click, type, select, hover, focus", action),
+            }
+        } else {
+            bail!("Browser session not initialized")
+        }
+    }
+}
+
 /// Browser tool for integration with the agent tool system
 pub struct BrowserTool {
     manager: BrowserManager,
@@ -947,6 +1315,11 @@ impl BrowserTool {
         self.manager.create_session().await
     }
 
+    /// Create or get a named browser session (e.g., "default")
+    pub async fn create_named_session(&self, name: &str) -> Result<BrowserSession> {
+        self.manager.create_named_session(name).await
+    }
+
     /// Get a session by ID
     pub async fn get_session(&self, id: &str) -> Option<BrowserSession> {
         self.manager.get_session(id).await
@@ -955,6 +1328,11 @@ impl BrowserTool {
     /// Close a session
     pub async fn close_session(&self, id: &str) -> Result<()> {
         self.manager.close_session(id).await
+    }
+
+    /// Remove a dead session and create a fresh one with the same name
+    pub async fn reconnect_named_session(&self, name: &str) -> Result<BrowserSession> {
+        self.manager.reconnect_named_session(name).await
     }
 
     /// List active sessions
@@ -1025,6 +1403,31 @@ impl BrowserTool {
         }
     }
 
+    /// Get accessibility tree snapshot for a session
+    pub async fn snapshot(&self, session_id: &str) -> Result<(AXSnapshot, RefMap)> {
+        if let Some(session) = self.manager.get_session(session_id).await {
+            session.accessibility_snapshot().await
+        } else {
+            bail!("Session not found: {}", session_id)
+        }
+    }
+
+    /// Act on an element by ref ID in a session
+    pub async fn act(
+        &self,
+        session_id: &str,
+        ref_map: &RefMap,
+        ref_id: &str,
+        action: &str,
+        value: Option<&str>,
+    ) -> Result<String> {
+        if let Some(session) = self.manager.get_session(session_id).await {
+            session.act_on_element(ref_map, ref_id, action, value).await
+        } else {
+            bail!("Session not found: {}", session_id)
+        }
+    }
+
     /// Shutdown the browser tool and close all sessions
     pub async fn shutdown(&self) -> Result<()> {
         self.manager.shutdown().await
@@ -1064,10 +1467,42 @@ impl BrowserManager {
         Ok(session)
     }
 
+    /// Create a browser session with a specific alias/name (e.g., "default").
+    /// If a session with this name already exists, return it.
+    pub async fn create_named_session(&self, name: &str) -> Result<BrowserSession> {
+        // Return existing session if one exists with this name
+        {
+            let sessions = self.sessions.read().await;
+            if let Some(existing) = sessions.get(name) {
+                return Ok(existing.clone());
+            }
+        }
+
+        let session = BrowserSession::new(self.config.clone()).await?;
+
+        let mut sessions = self.sessions.write().await;
+        // Store under the alias name, not the UUID
+        sessions.insert(name.to_string(), session.clone());
+
+        info!("Created named browser session: {}", name);
+        Ok(session)
+    }
+
     /// Get a session by ID
     pub async fn get_session(&self, id: &str) -> Option<BrowserSession> {
         let sessions = self.sessions.read().await;
         sessions.get(id).cloned()
+    }
+
+    /// Remove a dead session and create a fresh one with the same name
+    pub async fn reconnect_named_session(&self, name: &str) -> Result<BrowserSession> {
+        // Remove the dead session (don't call close — connection is already dead)
+        {
+            let mut sessions = self.sessions.write().await;
+            sessions.remove(name);
+        }
+        info!("Reconnecting browser session '{}'", name);
+        self.create_named_session(name).await
     }
 
     /// Close a session
@@ -1190,5 +1625,33 @@ mod tests {
         assert_eq!(escape_js_string("test"), "test");
         assert_eq!(escape_js_string("it's"), "it\\'s");
         assert_eq!(escape_js_string("a\"b"), "a\\\"b");
+    }
+
+    #[tokio::test]
+    #[ignore] // Run with: cargo test browser_navigate_live -- --ignored --nocapture
+    async fn browser_navigate_live() {
+        let browser = BrowserTool::new();
+
+        // Create named session
+        let session = browser.create_named_session("test").await
+            .expect("Failed to create named session");
+        println!("Session created: {}", session.id);
+
+        // Navigate
+        let result = browser.navigate("test", "https://example.com").await
+            .expect("Failed to navigate");
+        println!("URL: {}", result.url);
+        println!("Title: {}", result.title);
+        println!("Load time: {}ms", result.load_time_ms);
+
+        assert!(result.url.contains("example.com"), "URL should contain example.com");
+        assert!(!result.title.is_empty(), "Title should not be empty");
+
+        // Session should persist
+        assert!(browser.get_session("test").await.is_some(), "Session should persist");
+
+        // Cleanup
+        browser.close_session("test").await.expect("Failed to close session");
+        println!("Test passed!");
     }
 }

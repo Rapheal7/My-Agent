@@ -179,7 +179,7 @@ impl PromptSanitizer {
             tracing::warn!(
                 risk_level = %risk_level,
                 patterns = ?detected_patterns,
-                input_preview = %&input[..input.len().min(100)],
+                input_preview = %crate::truncate_safe(input, 100),
                 "Potential prompt injection detected"
             );
         }

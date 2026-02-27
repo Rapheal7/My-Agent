@@ -101,26 +101,33 @@ impl SmartReasoningOrchestrator {
     fn build_system_prompt() -> String {
         let skills_desc = Self::get_skills_description();
 
-        // Concise system prompt
-        format!(r#"You are a task orchestrator. Analyze requests and determine agent teams needed.
+        let config = Config::load().unwrap_or_default();
+
+        format!(r#"You are a task orchestrator. Analyze requests and create the optimal agent team.
 
 {skills_desc}
 
-Agent types:
-- code: Programming tasks
-- research: Web search and research
-- analysis: Data analysis
-- reasoning: Complex reasoning
-- file: File operations
-- explorer: Codebase/computer search and exploration (search files, find patterns, discover code)
-- general: General tasks
-- skill-creator: Creating new skills
+Agent types and when to use them:
+- research: Web research, best practices lookup, documentation search. Produces concise summaries.
+- code: Writing code, implementing features, creating files. Uses a strong coding model.
+- explorer: Searching and reading existing codebases. Read-only exploration.
+- bash: Running shell commands, system tasks, builds, tests.
+- reasoning: Complex analysis, architecture decisions, trade-off evaluation.
+- general: Tasks that need multiple tool types.
 
-Free models: qwen/qwen-2.5-coder-32b-instruct (code), meta-llama/llama-3.1-8b-instruct (general), moonshotai/kimi-k2.5 (skill-creator), z-ai/glm-5 (explorer)
+Configured models (use these, NOT free models):
+- Code: {code_model}
+- Research: {research_model}
+- Reasoning: {reasoning_model}
+- Utility: {utility_model}
 
-If task needs a missing capability, add:
-SKILL_NEEDED: <description>
-SKILL_NAME: <name>
+GUIDELINES:
+1. For "research then implement" tasks, create BOTH a research agent AND a code agent.
+   The research agent gathers information; the code agent writes the code.
+2. Use Sequential when agents depend on each other (research → code).
+3. Use Parallel when agents are independent (research + explore can run together).
+4. Give each agent a SPECIFIC task description — not just "handle the request".
+5. Always assign the right model for the agent type.
 
 Respond EXACTLY in this format:
 TASK_TYPE: <Simple|Conversation|Complex|MultiStep>
@@ -129,7 +136,22 @@ EXECUTION_MODE: <Sequential|Parallel>
 SKILL_NEEDED: <description or "none">
 SKILL_NAME: <name or empty>
 AGENTS:
-- type: <type>, task: "<task>", model: "<model>""#)
+- type: <type>, task: "<specific task description>", model: "<model>"
+
+Example for "Research X then write code for it":
+TASK_TYPE: MultiStep
+NEEDS_AGENTS: yes
+EXECUTION_MODE: Sequential
+SKILL_NEEDED: none
+SKILL_NAME:
+AGENTS:
+- type: research, task: "Research best practices for X. Summarize key findings, patterns, and recommendations.", model: "{research_model}"
+- type: code, task: "Based on the research findings, implement X with proper error handling. Write to /tmp/output.rs", model: "{code_model}""#,
+            code_model = config.models.code,
+            research_model = config.models.research,
+            reasoning_model = config.models.reasoning,
+            utility_model = config.models.utility,
+        )
     }
 
     /// Parse the orchestrator's response into a structured plan

@@ -266,6 +266,13 @@ impl FileSystemTool {
         let validation = self.sandbox.validate(path, &FileOperation::Write)
             .context("Sandbox validation failed")?;
 
+        // Check if hard-blocked before showing any approval dialog
+        if !validation.allowed && !validation.requires_approval {
+            return Ok(FileOperationResult::Error {
+                message: format!("Access denied: {}", validation.reason),
+            });
+        }
+
         // Read existing content for diff preview
         let original_content = if validation.resolved_path.exists() {
             fs::read_to_string(&validation.resolved_path).unwrap_or_default()
@@ -273,27 +280,40 @@ impl FileSystemTool {
             String::new()
         };
 
-        // Write operations always require approval (Medium risk)
+        // New file creation is Low risk (auto-approved), editing existing files is Medium risk
+        let is_new_file = !validation.resolved_path.exists();
+        let (risk_level, description) = if is_new_file {
+            (
+                crate::security::approval::RiskLevel::Low,
+                format!("Create new file: {} ({} lines)", path.display(), content.lines().count()),
+            )
+        } else {
+            (
+                crate::security::approval::RiskLevel::Medium,
+                format!("Edit file: {} ({} -> {} lines)",
+                    path.display(),
+                    original_content.lines().count(),
+                    content.lines().count()),
+            )
+        };
+
         let action = Action {
             id: uuid::Uuid::new_v4().to_string(),
             action_type: ActionType::FileWrite,
-            description: format!("Edit file: {} ({} -> {} lines)",
-                path.display(),
-                original_content.lines().count(),
-                content.lines().count()),
-            risk_level: crate::security::approval::RiskLevel::Medium,
+            description,
+            risk_level,
             target: path.display().to_string(),
             details: [
                 ("resolved_path".to_string(), validation.resolved_path.display().to_string()),
                 ("content_size".to_string(), content.len().to_string()),
-                ("will_create".to_string(), (!validation.resolved_path.exists()).to_string()),
+                ("will_create".to_string(), is_new_file.to_string()),
                 ("original_lines".to_string(), original_content.lines().count().to_string()),
                 ("new_lines".to_string(), content.lines().count().to_string()),
             ].into_iter().collect(),
             requested_at: chrono::Utc::now(),
         };
 
-        // Use diff preview for approval
+        // Use diff preview for approval (auto-approved for new files since Low risk)
         let decision = self.approver.request_approval_with_diff(
             action,
             &original_content,
@@ -309,10 +329,6 @@ impl FileSystemTool {
                     reason: "File edit cancelled by user".to_string(),
                 });
             }
-        }
-
-        if !validation.allowed && !validation.requires_approval {
-            bail!("Access denied: {}", validation.reason);
         }
 
         let resolved_path = &validation.resolved_path;
@@ -422,6 +438,13 @@ impl FileSystemTool {
         let validation = self.sandbox.validate(path, &FileOperation::Delete)
             .context("Sandbox validation failed")?;
 
+        // Check if hard-blocked before showing any approval dialog
+        if !validation.allowed && !validation.requires_approval {
+            return Ok(FileOperationResult::Error {
+                message: format!("Access denied: {}", validation.reason),
+            });
+        }
+
         // Delete operations always require approval (Critical risk)
         let action = Action {
             id: uuid::Uuid::new_v4().to_string(),
@@ -444,10 +467,6 @@ impl FileSystemTool {
                     reason: "File deletion denied by user".to_string(),
                 });
             }
-        }
-
-        if !validation.allowed && !validation.requires_approval {
-            bail!("Access denied: {}", validation.reason);
         }
 
         let resolved_path = &validation.resolved_path;

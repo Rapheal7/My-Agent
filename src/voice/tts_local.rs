@@ -50,7 +50,7 @@ impl LocalTts {
             return Ok(Vec::new());
         }
 
-        debug!("TTS synthesizing: \"{}\"", &text[..text.len().min(80)]);
+        debug!("TTS synthesizing: \"{}\"", crate::truncate_safe(text, 80));
 
         let request = SpeechRequest {
             model: "kokoro",

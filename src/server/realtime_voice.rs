@@ -198,12 +198,13 @@ async fn process_voice_response(
                 summary: if success {
                     format!("{} completed", name)
                 } else {
-                    format!("{} failed: {}", name, &message[..message.len().min(100)])
+                    format!("{} failed: {}", name, crate::truncate_safe(&message, 100))
                 },
             };
             let _ = tx_complete.try_send(OutboundMessage::Json(msg));
         })),
         on_progress: None,
+        timeout_secs: 300,
     };
 
     // Build messages for the tool loop (it adds its own system prompt)
@@ -225,7 +226,7 @@ async fn process_voice_response(
                 info!("Tool loop: {} iterations, {} tool calls", result.iterations, result.tool_calls_made);
             }
             info!("LLM response ({} chars): \"{}\"", response_text.len(),
-                &response_text[..response_text.len().min(100)]);
+                crate::truncate_safe(&response_text, 100));
 
             for sentence in &split_sentences(&response_text) {
                 if *interrupted { break; }

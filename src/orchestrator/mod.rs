@@ -9,6 +9,7 @@ pub mod bus;
 pub mod context;
 pub mod cost;
 pub mod cli;
+pub mod pipeline;
 
 // Re-export commonly used types
 pub use orchestrator::{SmartReasoningOrchestrator, OrchestrationPlan, AgentSpec, TaskType, ExecutionMode};

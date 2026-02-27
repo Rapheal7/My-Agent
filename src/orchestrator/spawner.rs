@@ -18,12 +18,29 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 const MAX_AGENTS: usize = 10;
+/// Maximum children any single agent can spawn
+pub const MAX_CHILDREN_PER_AGENT: usize = 5;
 
 /// Agent spawner with proper dual-channel communication
 pub struct AgentSpawner {
     context: Arc<SharedContext>,
     bus: Arc<AgentBus>,
     handles: Vec<SubagentHandle>,
+    /// Tokio task handles for spawned agents — used to abort on cancellation
+    task_handles: Vec<tokio::task::JoinHandle<()>>,
+    /// Current nesting depth
+    pub current_depth: u32,
+    /// Maximum nesting depth
+    pub max_depth: u32,
+}
+
+impl Drop for AgentSpawner {
+    fn drop(&mut self) {
+        // Abort all running agent tasks when the spawner is dropped (e.g., on Ctrl+C cancel)
+        for handle in self.task_handles.drain(..) {
+            handle.abort();
+        }
+    }
 }
 
 /// Handle to a spawned subagent
@@ -37,7 +54,7 @@ pub struct SubagentHandle {
 
 impl AgentSpawner {
     pub fn new(context: Arc<SharedContext>, bus: Arc<AgentBus>) -> Self {
-        Self { context, bus, handles: Vec::new() }
+        Self { context, bus, handles: Vec::new(), task_handles: Vec::new(), current_depth: 0, max_depth: 2 }
     }
 
     pub async fn spawn_batch(&mut self, specs: Vec<AgentSpec>, _mode: ExecutionMode) -> Result<Vec<String>> {
@@ -56,6 +73,20 @@ impl AgentSpawner {
 
     /// Spawn a typed subagent with proper tool restrictions and dual channels
     pub async fn spawn_typed(&mut self, spec: AgentSpec, agent_type: SubagentType) -> Result<String> {
+        // Depth check
+        if self.current_depth >= self.max_depth {
+            anyhow::bail!(
+                "Maximum agent nesting depth ({}) reached, cannot spawn more children",
+                self.max_depth
+            );
+        }
+        // Children-per-agent check
+        if self.handles.len() >= MAX_CHILDREN_PER_AGENT {
+            anyhow::bail!(
+                "Maximum children per agent ({}) reached",
+                MAX_CHILDREN_PER_AGENT
+            );
+        }
         let agent_id = Uuid::new_v4().to_string();
         let short_id = format!("{}-{}", agent_type.display_name(), &agent_id[..8]);
         let ctx_agent_type = Self::subagent_to_context_type(&agent_type);
@@ -84,7 +115,7 @@ impl AgentSpawner {
         let task_desc = spec.task.clone();
         let agent_type_clone = agent_type.clone();
 
-        tokio::spawn(async move {
+        let join_handle = tokio::spawn(async move {
             context.update_agent_status(&id_clone, AgentStatus::Ready).await;
 
             loop {
@@ -109,6 +140,7 @@ impl AgentSpawner {
                                     allowed_tools,
                                     max_iterations: agent_type_clone.max_iterations(),
                                     max_tokens: 4096,
+                                    timeout_secs: 600,
                                     on_tool_start: None,
                                     on_tool_complete: None,
                                     on_progress: None,
@@ -173,6 +205,7 @@ impl AgentSpawner {
             }
         });
 
+        self.task_handles.push(join_handle);
         self.handles.push(SubagentHandle {
             id: agent_id.clone(),
             agent_type,
@@ -265,10 +298,15 @@ impl AgentSpawner {
 
     pub async fn shutdown_all(&mut self) -> Result<()> {
         info!("Shutting down all agents");
+        // Send graceful shutdown messages
         for handle in &self.handles {
             let _ = self.bus.send_to_child(&handle.id, AgentMessage::Shutdown).await;
         }
         self.handles.clear();
+        // Abort all tokio tasks to ensure immediate cleanup
+        for task_handle in self.task_handles.drain(..) {
+            task_handle.abort();
+        }
         Ok(())
     }
 

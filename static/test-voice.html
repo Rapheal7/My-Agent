@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Voice Test</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="background: #0f0f1a; color: white; font-family: sans-serif; text-align: center; padding: 50px;">
+    <h1>Voice Test Page</h1>
+    <p id="status">Loading...</p>
+    <button onclick="testAudio()" style="padding: 20px; font-size: 20px;">Test Audio</button>
+    <script>
+        document.getElementById('status').textContent = 'Page loaded at ' + new Date().toLocaleTimeString();
+
+        function testAudio() {
+            document.getElementById('status').textContent = 'Playing test sound...';
+
+            const ctx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+
+            osc.frequency.value = 440;
+            gain.gain.setValueAtTime(0.5, ctx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+
+            osc.start();
+            osc.stop(ctx.currentTime + 0.5);
+
+            document.getElementById('status').textContent = 'Test sound played! If you heard it, audio works!';
+        }
+    </script>
+</body>
+</html>

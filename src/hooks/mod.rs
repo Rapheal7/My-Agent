@@ -23,6 +23,8 @@ pub enum HookPoint {
     OnSessionStart,
     OnSessionEnd,
     OnLearningCapture,
+    OnToolLoopStart,
+    OnToolLoopEnd,
 }
 
 impl std::fmt::Display for HookPoint {
@@ -38,6 +40,8 @@ impl std::fmt::Display for HookPoint {
             HookPoint::OnSessionStart => write!(f, "on_session_start"),
             HookPoint::OnSessionEnd => write!(f, "on_session_end"),
             HookPoint::OnLearningCapture => write!(f, "on_learning_capture"),
+            HookPoint::OnToolLoopStart => write!(f, "on_tool_loop_start"),
+            HookPoint::OnToolLoopEnd => write!(f, "on_tool_loop_end"),
         }
     }
 }

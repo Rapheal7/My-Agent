@@ -5,7 +5,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Default blocked paths (sensitive system files)
+/// Default blocked paths (sensitive system files and directories)
 pub const DEFAULT_BLOCKED_PATHS: &[&str] = &[
     "/etc/passwd",
     "/etc/shadow",
@@ -23,6 +23,30 @@ pub const DEFAULT_BLOCKED_PATHS: &[&str] = &[
     "id_ed25519",
     ".pem",
     ".key",
+];
+
+/// Directories that are always blocked (entire subtree)
+pub const BLOCKED_DIRECTORIES: &[&str] = &[
+    "/root",
+    "/etc/shadow",
+    "/etc/sudoers.d",
+    "/var/lib/private",
+    "/run/secrets",
+];
+
+/// System directories where writes/deletes are always blocked
+pub const SYSTEM_WRITE_BLOCKED: &[&str] = &[
+    "/usr/bin",
+    "/usr/sbin",
+    "/usr/lib",
+    "/usr/local/bin",
+    "/usr/local/sbin",
+    "/sbin",
+    "/bin",
+    "/boot",
+    "/sys",
+    "/proc",
+    "/dev",
 ];
 
 /// Default allowed paths (user workspace directories)
@@ -217,6 +241,14 @@ impl FileSystemSandbox {
     pub fn is_blocked(&self, path: &Path) -> bool {
         let path_str = path.to_string_lossy().to_lowercase();
 
+        // Check blocked directories (entire subtree is blocked)
+        for dir in BLOCKED_DIRECTORIES {
+            let dir_lower = dir.to_lowercase();
+            if path_str == dir_lower || path_str.starts_with(&format!("{}/", dir_lower)) {
+                return true;
+            }
+        }
+
         // Check blocked patterns
         for pattern in &self.config.blocked_patterns {
             let pattern_lower = pattern.to_lowercase();
@@ -273,9 +305,26 @@ impl FileSystemSandbox {
                 allowed: false,
                 requires_approval: false,
                 risk_level: RiskLevel::Critical,
-                reason: format!("Path '{}' is blocked (sensitive file)", path.display()),
+                reason: format!("Path '{}' is blocked (sensitive path)", path.display()),
                 resolved_path: resolved,
             });
+        }
+
+        // Block writes/deletes to system directories
+        if matches!(operation, FileOperation::Write | FileOperation::Delete) {
+            let resolved_str = resolved.to_string_lossy().to_lowercase();
+            for sys_dir in SYSTEM_WRITE_BLOCKED {
+                let sys_lower = sys_dir.to_lowercase();
+                if resolved_str == sys_lower || resolved_str.starts_with(&format!("{}/", sys_lower)) {
+                    return Ok(SandboxResult {
+                        allowed: false,
+                        requires_approval: false,
+                        risk_level: RiskLevel::Critical,
+                        reason: format!("Cannot write to system directory: {}", sys_dir),
+                        resolved_path: resolved,
+                    });
+                }
+            }
         }
 
         // Check if in allowed paths
@@ -417,5 +466,38 @@ mod tests {
         assert_eq!(FileOperation::Write.risk_level(), RiskLevel::Medium);
         assert_eq!(FileOperation::Execute.risk_level(), RiskLevel::High);
         assert_eq!(FileOperation::Delete.risk_level(), RiskLevel::Critical);
+    }
+
+    #[test]
+    fn test_blocked_directories() {
+        let sandbox = FileSystemSandbox::new();
+
+        // /root and everything under it should be blocked
+        assert!(sandbox.is_blocked(Path::new("/root")));
+        assert!(sandbox.is_blocked(Path::new("/root/secret.txt")));
+        assert!(sandbox.is_blocked(Path::new("/root/.bashrc")));
+        assert!(sandbox.is_blocked(Path::new("/root/subdir/file.txt")));
+
+        // Other system paths should not be blocked for reads
+        assert!(!sandbox.is_blocked(Path::new("/usr/bin/test")));
+        assert!(!sandbox.is_blocked(Path::new("/home/user/file.txt")));
+    }
+
+    #[test]
+    fn test_system_write_blocked() {
+        let sandbox = FileSystemSandbox::new();
+
+        // Writes to system directories should be blocked
+        let result = sandbox.validate(Path::new("/usr/bin/test"), &FileOperation::Write).unwrap();
+        assert!(!result.allowed);
+        assert!(!result.requires_approval); // Hard-blocked, not approval-gated
+
+        let result = sandbox.validate(Path::new("/sbin/init"), &FileOperation::Write).unwrap();
+        assert!(!result.allowed);
+
+        // Reads from system directories are fine (just outside allowed paths)
+        let result = sandbox.validate(Path::new("/usr/bin/ls"), &FileOperation::Read).unwrap();
+        // Not hard-blocked, but outside allowed paths so requires approval
+        assert!(result.requires_approval);
     }
 }

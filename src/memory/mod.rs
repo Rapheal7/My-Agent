@@ -12,6 +12,7 @@ pub mod sqlite;
 pub mod embeddings;
 pub mod retrieval;
 pub mod recursive;
+pub mod daily_log;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};

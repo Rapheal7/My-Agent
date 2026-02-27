@@ -390,7 +390,7 @@ async fn fetch_and_extract(url: &str, max_length: usize) -> Result<String> {
     }
 
     if content.len() > max_length {
-        content = format!("{}... [truncated]", &content[..max_length]);
+        content = crate::truncate_safe(&content, max_length);
     }
 
     Ok(content)

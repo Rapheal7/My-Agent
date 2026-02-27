@@ -7,7 +7,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-use crate::agent::llm::{OpenRouterClient, ChatMessage, ToolDefinition};
+use crate::agent::llm::{self, OpenRouterClient, ChatMessage, ToolDefinition};
 
 /// Error classification for failover decisions
 #[derive(Debug, Clone, PartialEq)]
@@ -157,7 +157,10 @@ impl FailoverClient {
                     .map(|m| m.max_tokens)
             });
 
-            match self.client.complete_with_tools(
+            // Resolve the correct provider client for this model
+            let client = llm::client_for_model(model).unwrap_or_else(|_| self.client.clone());
+
+            match client.complete_with_tools(
                 model,
                 messages.clone(),
                 tools.clone(),
@@ -216,7 +219,10 @@ impl FailoverClient {
         let mut last_error = None;
 
         for (i, model) in model_chain.iter().enumerate() {
-            match self.client.complete(model, messages.clone(), max_tokens).await {
+            // Resolve the correct provider client for this model
+            let client = llm::client_for_model(model).unwrap_or_else(|_| self.client.clone());
+
+            match client.complete(model, messages.clone(), max_tokens).await {
                 Ok(response) => {
                     if i > 0 {
                         info!("Failover succeeded: {} -> {}", primary_model, model);
